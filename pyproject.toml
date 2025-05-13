@@ -20,3 +20,27 @@ package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+addopts = "--tb=short -q"
+
+[tool.coverage.run]
+branch = true
+source = ["pyaxencoapi"]
+
+[tool.mypy]
+strict = true
+
+[tool.isort]
+profile = "black"
+
+[project.optional-dependencies]
+dev = [
+  "pytest",
+  "pytest-asyncio",
+  "aiohttp",
+  "aioresponses",
+  "python-socketio[asyncio_client]"
+]
+
