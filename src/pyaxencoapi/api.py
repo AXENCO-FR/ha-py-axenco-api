@@ -1,12 +1,12 @@
 """API client for interacting with MyNeomitis devices."""
 
-import asyncio
 from collections.abc import Callable
 import logging
 import time
 
 import aiohttp
 import socketio
+import async_timeout
 
 from .utils import find_childs, get_rfid_by_id
 
@@ -158,7 +158,7 @@ class PyAxencoAPI:
         }
 
         try:
-            async with asyncio.timeout(10):
+            async with async_timeout.timeout(10):
                 response = await self.session.post(url, json=data, headers=headers)
                 response.raise_for_status()
                 result = await response.json()
