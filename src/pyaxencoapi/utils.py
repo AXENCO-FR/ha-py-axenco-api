@@ -1,8 +1,5 @@
-"""Utility functions for the MyNeo integration.
+"""Utility functions for PyAxencoAPI"""
 
-This module provides helper functions to process and format data
-for the MyNeo integration, such as formatting weekly schedules.
-"""
 from typing import Any
 
 def find_childs(devices: list[dict[str, Any]], parent_rfid: str) -> list[str]:
