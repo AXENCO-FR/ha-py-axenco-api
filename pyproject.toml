@@ -1,0 +1,12 @@
+[project]
+name = "pyaxencoapi"
+version = "0.1.0"
+description = "Librairie d'utilisation de l'API REST/Websocket d'Axenco"
+readme = "README.md"
+authors = [{ name = "Léo Periou", email = "leo.periou@axenco.com" }]
+license = { text = "MIT" }
+dependencies = []
+
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
