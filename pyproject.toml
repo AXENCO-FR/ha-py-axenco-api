@@ -5,8 +5,18 @@ description = "Librairie d'utilisation de l'API REST/Websocket d'Axenco"
 readme = "README.md"
 authors = [{ name = "Léo Periou", email = "leo.periou@axenco.com" }]
 license = { text = "MIT" }
-dependencies = []
+requires-python = ">=3.10"
+dependencies = [
+    "aiohttp>=3.8.0",
+    "python-socketio[asyncio_client]>=5.0.0"
+]
 
 [build-system]
-requires = ["setuptools", "wheel"]
+requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
