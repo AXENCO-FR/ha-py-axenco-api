@@ -1,3 +1,3 @@
-from .api import MyNeoAPI
+from .api import PyAxencoAPI
 
-__all__ = ["MyNeoAPI"]
+__all__ = ["PyAxencoAPI"]

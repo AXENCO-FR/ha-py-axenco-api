@@ -1,4 +1,4 @@
-"""API client for interacting with MyNeo devices."""
+"""API client for interacting with MyNeomitis devices."""
 
 import asyncio
 from collections.abc import Callable
@@ -15,7 +15,7 @@ _LOGGER = logging.getLogger(__name__)
 API_BASE = "https://user-ep.imhotepcreation.com"
 
 
-class MyNeoAPI:
+class PyAxencoAPI:
     """API client for interacting with MyNeo Fluid devices."""
 
     def __init__(self, email: str, password: str, session: aiohttp.ClientSession) -> None:
