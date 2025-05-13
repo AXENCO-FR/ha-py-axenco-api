@@ -1,4 +1,4 @@
-"""API client for interacting with MyNeomitis devices."""
+"""API client for interacting with the Axenco API."""
 
 from collections.abc import Callable
 import logging
@@ -16,20 +16,18 @@ API_BASE = "https://user-ep.imhotepcreation.com"
 
 
 class PyAxencoAPI:
-    """API client for interacting with MyNeo Fluid devices."""
+    """API client for interacting with the Axenco API."""
 
-    def __init__(self, email: str, password: str, session: aiohttp.ClientSession) -> None:
-        """Initialize the MyNeoAPI client.
+    def __init__(self, source_id: str, session: aiohttp.ClientSession) -> None:
+        """Initialize the client.
 
         Args:
-            email: The email address used for authentication.
-            password: The password used for authentication.
+            source_id: The unique id for request.
             session: The aiohttp session for making HTTP requests.
 
         """
-        self.email = email
-        self.password = password
         self.session = session
+        self.source_id = source_id
         self.token: str | None = None
         self.refresh_token: str | None = None
         self.user_id: str | None = None
@@ -44,22 +42,22 @@ class PyAxencoAPI:
         """Connect the Axenco WebSocket and handle events."""
         @self.sio.event
         async def connect() -> None:
-            _LOGGER.warning("WebSocket connected to Axenco")
+            _LOGGER.debug("WebSocket connected to Axenco")
 
         @self.sio.event
         async def disconnect() -> None:
-            _LOGGER.warning("WebSocket disconnected from Axenco")
+            _LOGGER.debug("WebSocket disconnected from Axenco")
 
         @self.sio.on("setState")
         async def on_set_state(data: dict) -> None:
             device_id = data.get("objectId")
-            _LOGGER.warning("WS SETSTATE received: %s", data)
+            _LOGGER.debug("WS SETSTATE received: %s", data)
             await self.notify_update(device_id, data.get("data"))
 
         @self.sio.on("setProgram")
         async def on_set_program(data: dict) -> None:
             device_id = data.get("objectId")
-            _LOGGER.warning("WS SETPROGRAM received: %s", data)
+            _LOGGER.debug("WS SETPROGRAM received: %s", data)
             await self.notify_update(device_id, {"program": data.get("data")})
 
         @self.sio.event
@@ -69,23 +67,23 @@ class PyAxencoAPI:
         @self.sio.on("update")
         async def on_update(data: dict) -> None:
             device_id = data.get("objectId")
-            _LOGGER.warning("WS UPDATE received: %s", data)
+            _LOGGER.debug("WS UPDATE received: %s", data)
             await self.notify_update(device_id, data.get("data"))
 
         @self.sio.on("discover")
         async def on_discover(data: dict) -> None:
-            _LOGGER.warning("WS DISCOVER received: %s", data)
+            _LOGGER.debug("WS DISCOVER received: %s", data)
 
         @self.sio.on("updateExtDevState")
         async def on_update_ext(data: dict) -> None:
             device_id = data.get("objectId")
-            _LOGGER.warning("WS UPDATE SUB-SERVICE received: %s", data)
+            _LOGGER.debug("WS UPDATE SUB-SERVICE received: %s", data)
             await self.notify_update(device_id, data.get("data"))
 
         @self.sio.on("setExtDevState")
         async def on_set_ext(data: dict) -> None:
             device_id = data.get("objectId")
-            _LOGGER.warning("WS SETSTATE SUB-SERVICE received: %s", data)
+            _LOGGER.debug("WS SETSTATE SUB-SERVICE received: %s", data)
             await self.notify_update(device_id, data.get("data"))
 
         try:
@@ -139,22 +137,24 @@ class PyAxencoAPI:
                 if cb := self._listeners.get(child_id):
                     cb(new_state)
 
-    async def login(self) -> None:
-        """Authenticate with the MyNeo API and retrieve authentication tokens.
+    async def login(self, email: str, password: str) -> None:
+        """Authenticate with the Axenco API and retrieve authentication tokens.
 
         Raises:
+            email: The email address used for authentication.
+            password: The password used for authentication.
             aiohttp.ClientError: If there is an HTTP error during the request.
             TimeoutError: If the request times out.
             ValueError: If the response is invalid.
 
         """
         url = f"{API_BASE}/v1/auth/login"
-        data = {"email": self.email, "password": self.password}
+        data = {"email": email, "password": password}
         headers = {
             "application": "home-assistant",
             "application-version": "1.0.0",
             "source-type": "plugin",
-            "source-id": "myneomitis"
+            "source-id": self.source_id
         }
 
         try:
@@ -170,20 +170,19 @@ class PyAxencoAPI:
                 self.refresh_token = result["refresh_token"]
                 if not self.user_id:
                     self.user_id = result["id"]
-                _LOGGER.warning("TOKEN: %s, REFRESH_TOKEN: %s", self.token, self.refresh_token)
 
         except aiohttp.ClientError as err:
-            _LOGGER.error("HTTP error during login to MyNeo: %s", err)
+            _LOGGER.error("HTTP error during login: %s", err)
             raise
         except TimeoutError as err:
-            _LOGGER.error("Timeout error during login to MyNeo: %s", err)
+            _LOGGER.error("Timeout error during login: %s", err)
             raise
         except ValueError as err:
-            _LOGGER.error("Invalid response during login to MyNeo: %s", err)
+            _LOGGER.error("Invalid response during login: %s", err)
             raise
 
     async def logout(self) -> None:
-        """Log out from the MyNeo API and clear session data."""
+        """Log out from the Axenco API and clear session data."""
         await self.sio.disconnect()
         self.token = None
         self.refresh_token = None
@@ -201,7 +200,7 @@ class PyAxencoAPI:
             "Authorization": f"Bearer {self.token}",
             "application": "home-assistant",
             "source-type": "plugin",
-            "source-id": "myneomitis"
+            "source-id": self.source_id
         }
 
     async def get_devices(self, force: bool = False) -> list[dict]:
