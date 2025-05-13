@@ -1,0 +1,21 @@
+Metadata-Version: 2.4
+Name: pyaxencoapi
+Version: 0.1.0
+Summary: Librairie d'utilisation de l'API REST/Websocket d'Axenco
+Author-email: Léo Periou <leo.periou@axenco.com>
+License: MIT
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Requires-Dist: aiohttp>=3.8.0
+Requires-Dist: python-socketio[asyncio_client]>=5.0.0
+Dynamic: license-file
+
+# MyNeoAPI
+
+Client Python asynchrone pour interagir avec les dispositifs connectés MyNeo.
+
+## Installation
+
+```bash
+pip install myneoapi
