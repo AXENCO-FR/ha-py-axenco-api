@@ -22,7 +22,7 @@ async def test_login_success(api_client):
             "id": "user_001"
         })
 
-        await api_client.login()
+        await api_client.login(email="test@example.com",password="securepassword")
         assert api_client.token == "abc123"
         assert api_client.refresh_token == "def456"
         assert api_client.user_id == "user_001"
@@ -33,7 +33,7 @@ async def test_login_invalid_response(api_client):
         m.post(f"{API_BASE}/v1/auth/login", payload={})
 
         with pytest.raises(ValueError):
-            await api_client.login()
+            await api_client.login(email="test@example.com",password="securepassword")
 
 @pytest.mark.asyncio
 async def test_get_devices_cache(api_client):
