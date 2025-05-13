@@ -5,10 +5,11 @@ description = "Librairie d'utilisation de l'API REST/Websocket d'Axenco"
 readme = "README.md"
 authors = [{ name = "Léo Periou", email = "leo.periou@axenco.com" }]
 license = { text = "MIT" }
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = [
     "aiohttp>=3.8.0",
-    "python-socketio[asyncio_client]>=5.0.0"
+    "python-socketio[asyncio_client]>=5.0.0",
+    "async-timeout>=4.0.2"
 ]
 
 [build-system]
