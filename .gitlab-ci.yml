@@ -1,6 +1,7 @@
 image: python:3.10-alpine
 
 stages:
+  - test
   - build
   - publish
 
@@ -11,6 +12,17 @@ variables:
 before_script:
   - python -m pip install --upgrade pip
   - pip install build twine toml
+
+test:
+  stage: test
+  image: python:3.10-alpine
+  variables:
+    PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
+  before_script:
+    - python -m pip install --upgrade pip
+    - pip install .[dev]
+  script:
+    - pytest --cov=pyaxencoapi
 
 build:
   stage: build

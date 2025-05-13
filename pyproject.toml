@@ -41,6 +41,7 @@ dev = [
   "pytest-asyncio",
   "aiohttp",
   "aioresponses",
-  "python-socketio[asyncio_client]"
+  "python-socketio[asyncio_client]",
+  "coverage"
 ]
 
