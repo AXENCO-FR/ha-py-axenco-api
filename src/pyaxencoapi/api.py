@@ -287,10 +287,10 @@ class PyAxencoAPI:
             _LOGGER.error("PyAxencoAPI : HTTP error while retrieving devices: %s", e)
             return []
         except TimeoutError as e:
-            _LOGGER.error("PyAxencoAPI :Timeout error while retrieving devices: %s", e)
+            _LOGGER.error("PyAxencoAPI : Timeout error while retrieving devices: %s", e)
             return []
         except ValueError as e:
-            _LOGGER.error("PyAxencoAPI :Invalid response while retrieving devices: %s", e)
+            _LOGGER.error("PyAxencoAPI : Invalid response while retrieving devices: %s", e)
             return []
 
     async def get_device_state(self, device_id: str) -> dict | None:
@@ -311,13 +311,13 @@ class PyAxencoAPI:
                 response.raise_for_status()
                 return await response.json()
         except aiohttp.ClientError as e:
-            _LOGGER.error("PyAxencoAPI :HTTP error while retrieving device %s: %s", device_id, e)
+            _LOGGER.error("PyAxencoAPI : HTTP error while retrieving device %s: %s", device_id, e)
             return None
         except TimeoutError as e:
-            _LOGGER.error("PyAxencoAPI :Timeout error while retrieving device %s: %s", device_id, e)
+            _LOGGER.error("PyAxencoAPI : Timeout error while retrieving device %s: %s", device_id, e)
             return None
         except ValueError as e:
-            _LOGGER.error("PyAxencoAPI :Invalid response while retrieving device %s: %s", device_id, e)
+            _LOGGER.error("PyAxencoAPI : Invalid response while retrieving device %s: %s", device_id, e)
             return None
 
     async def get_sub_device_state(self, gateway_id: str) -> dict | None:
@@ -338,13 +338,13 @@ class PyAxencoAPI:
                 response.raise_for_status()
                 return await response.json()
         except aiohttp.ClientError as e:
-            _LOGGER.error("PyAxencoAPI :HTTP error while retrieving device %s: %s", gateway_id, e)
+            _LOGGER.error("PyAxencoAPI : HTTP error while retrieving device %s: %s", gateway_id, e)
             return None
         except TimeoutError as e:
-            _LOGGER.error("PyAxencoAPI :Timeout error while retrieving device %s: %s", gateway_id, e)
+            _LOGGER.error("PyAxencoAPI : Timeout error while retrieving device %s: %s", gateway_id, e)
             return None
         except ValueError as e:
-            _LOGGER.error("PyAxencoAPI :Invalid response while retrieving device %s: %s", gateway_id, e)
+            _LOGGER.error("PyAxencoAPI : Invalid response while retrieving device %s: %s", gateway_id, e)
             return None
 
     async def set_device_temperature(self, device_id: str, temperature: float) -> None:
