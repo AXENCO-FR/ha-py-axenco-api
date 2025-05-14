@@ -2,7 +2,7 @@
 import sys
 import toml
 
-version = sys.argv[1]
+version = sys.argv[2]
 pyproject = "pyproject.toml"
 
 data = toml.load(pyproject)
