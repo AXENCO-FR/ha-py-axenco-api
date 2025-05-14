@@ -32,11 +32,16 @@ class PyAxencoAPI:
         self.refresh_token: str | None = None
         self.user_id: str | None = None
         self.sio = socketio.AsyncClient()
-        self._listeners: dict[str, Callable[[dict], None]] = {}
 
         # Cache
         self._devices_cache: list[dict] = []
         self._last_fetch: float = 0
+
+        # Websocket listeners
+        self._listeners: dict[str, Callable[[dict], None]] = {}
+        self._discovery_callbacks: list[Callable[[dict], None]] = []
+        self._removal_callbacks: list[Callable[[str], None]] = []
+
 
     async def connect_websocket(self) -> None:
         """Connect the Axenco WebSocket and handle events."""
@@ -86,6 +91,18 @@ class PyAxencoAPI:
             _LOGGER.debug("WS SETSTATE SUB-SERVICE received: %s", data)
             await self.notify_update(device_id, data.get("data"))
 
+        @self.sio.on("link")
+        async def on_link(data: dict) -> None:
+            devices = data.get("data", {}).get("devices", [])
+            _LOGGER.debug("WS LINK received: %s", data)
+            await self.notify_discovery(devices)
+
+        @self.sio.on("unlink")
+        async def on_unlink(data: dict) -> None:
+            device_id = data.get("objectId")
+            _LOGGER.debug("WS UNLINK received: %s", data)
+            await self.notify_removal(device_id)
+
         try:
             ws_url = f"{API_BASE}?userId={self.user_id}"
 
@@ -112,6 +129,46 @@ class PyAxencoAPI:
 
         """
         self._listeners[device_id] = callback
+
+    def register_discovery_callback(self, callback: Callable[[dict], None]) -> None:
+        """
+        Register a callback to be invoked when a new device is discovered.
+
+        Args:
+            callback (Callable[[dict], None]): A function that takes a dictionary 
+            containing device information as its argument and returns None.
+        """
+        self._discovery_callbacks.append(callback)
+
+    def register_removal_callback(self, callback: Callable[[str], None]) -> None:
+        """
+        Registers a callback function to be invoked when a device is unlinked.
+
+        Args:
+            callback (Callable[[str], None]): A function that takes a single string argument 
+            (representing the device ID) and returns None. This function will be called 
+            whenever a device is removed.
+        """
+        self._removal_callbacks.append(callback)
+
+    async def notify_discovery(self, device: dict) -> None:
+        """
+        Notify registered listeners about the discovery of a new device.
+
+        Args:
+            device (dict): A dictionary containing information about the discovered device.
+        """
+        for cb in self._discovery_callbacks:
+            cb(device)
+
+    async def notify_removal(self, device_id: str) -> None:
+        """Notify listeners that a device was removed (unlinked).
+        
+        Args:
+            device_id (str): The ID of the device to remove.
+        """
+        for cb in self._removal_callbacks:
+            cb(device_id)
 
     async def notify_update(self, device_id: str, new_state: dict) -> None:
         """Notify an entity of a WebSocket update and propagate to child devices.
