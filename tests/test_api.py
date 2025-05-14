@@ -3,7 +3,7 @@ import pytest
 import aiohttp
 from aioresponses import aioresponses
 from pyaxencoapi.api import PyAxencoAPI
-from unittest.mock import AsyncMock, patch
+from unittest.mock import Mock, patch
 
 API_BASE = "https://user-ep.imhotepcreation.com"
 
@@ -87,7 +87,7 @@ async def test_logout(api_client):
 
 @pytest.mark.asyncio
 async def test_notify_update_with_listener(api_client):
-    mock_cb = AsyncMock()
+    mock_cb = Mock()
     api_client._listeners["dev123"] = mock_cb
     with patch("pyaxencoapi.api.get_rfid_by_id", return_value="rfid123"), \
          patch("pyaxencoapi.api.find_childs", return_value=["child1"]), \

@@ -47,60 +47,60 @@ class PyAxencoAPI:
         """Connect the Axenco WebSocket and handle events."""
         @self.sio.event
         async def connect() -> None:
-            _LOGGER.debug("WebSocket connected to Axenco")
+            _LOGGER.debug("PyAxencoAPI : WebSocket connected to Axenco")
 
         @self.sio.event
         async def disconnect() -> None:
-            _LOGGER.debug("WebSocket disconnected from Axenco")
+            _LOGGER.debug("PyAxencoAPI : WebSocket disconnected from Axenco")
 
         @self.sio.on("setState")
         async def on_set_state(data: dict) -> None:
             device_id = data.get("objectId")
-            _LOGGER.debug("WS SETSTATE received: %s", data)
+            _LOGGER.debug("PyAxencoAPI : WS SETSTATE received: %s", data)
             await self.notify_update(device_id, data.get("data"))
 
         @self.sio.on("setProgram")
         async def on_set_program(data: dict) -> None:
             device_id = data.get("objectId")
-            _LOGGER.debug("WS SETPROGRAM received: %s", data)
+            _LOGGER.debug("PyAxencoAPI : WS SETPROGRAM received: %s", data)
             await self.notify_update(device_id, {"program": data.get("data")})
 
         @self.sio.event
         async def connect_error(data: dict) -> None:
-            _LOGGER.error("WebSocket connection error: %s", data)
+            _LOGGER.error("PyAxencoAPI : WebSocket connection error: %s", data)
 
         @self.sio.on("update")
         async def on_update(data: dict) -> None:
             device_id = data.get("objectId")
-            _LOGGER.debug("WS UPDATE received: %s", data)
+            _LOGGER.debug("PyAxencoAPI : WS UPDATE received: %s", data)
             await self.notify_update(device_id, data.get("data"))
 
         @self.sio.on("discover")
         async def on_discover(data: dict) -> None:
-            _LOGGER.debug("WS DISCOVER received: %s", data)
+            _LOGGER.debug("PyAxencoAPI : WS DISCOVER received: %s", data)
 
         @self.sio.on("updateExtDevState")
         async def on_update_ext(data: dict) -> None:
             device_id = data.get("objectId")
-            _LOGGER.debug("WS UPDATE SUB-SERVICE received: %s", data)
+            _LOGGER.debug("PyAxencoAPI : WS UPDATE SUB-SERVICE received: %s", data)
             await self.notify_update(device_id, data.get("data"))
 
         @self.sio.on("setExtDevState")
         async def on_set_ext(data: dict) -> None:
             device_id = data.get("objectId")
-            _LOGGER.debug("WS SETSTATE SUB-SERVICE received: %s", data)
+            _LOGGER.debug("PyAxencoAPI : WS SETSTATE SUB-SERVICE received: %s", data)
             await self.notify_update(device_id, data.get("data"))
 
         @self.sio.on("link")
         async def on_link(data: dict) -> None:
             devices = data.get("data", {}).get("devices", [])
-            _LOGGER.debug("WS LINK received: %s", data)
+            _LOGGER.debug("PyAxencoAPI : WS LINK received: %s", data)
             await self.notify_discovery(devices)
 
         @self.sio.on("unlink")
         async def on_unlink(data: dict) -> None:
             device_id = data.get("objectId")
-            _LOGGER.debug("WS UNLINK received: %s", data)
+            _LOGGER.debug("PyAxencoAPI : WS UNLINK received: %s", data)
             await self.notify_removal(device_id)
 
         try:
@@ -114,7 +114,7 @@ class PyAxencoAPI:
             )
 
         except (socketio.exceptions.ConnectionError, aiohttp.ClientError) as e:
-            _LOGGER.error("WebSocket connection failed: %s", e)
+            _LOGGER.error("PyAxencoAPI : WebSocket connection failed: %s", e)
 
     async def disconnect_websocket(self) -> None:
         """Disconnect the Axenco WebSocket connection."""
@@ -221,7 +221,7 @@ class PyAxencoAPI:
                 result = await response.json()
 
                 if "token" not in result or "refresh_token" not in result or "id" not in result:
-                    raise ValueError("Unexpected response format")  # noqa: TRY301
+                    raise ValueError("PyAxencoAPI : Unexpected response format")  # noqa: TRY301
 
                 self.token = result["token"]
                 self.refresh_token = result["refresh_token"]
@@ -229,13 +229,13 @@ class PyAxencoAPI:
                     self.user_id = result["id"]
 
         except aiohttp.ClientError as err:
-            _LOGGER.error("HTTP error during login: %s", err)
+            _LOGGER.error("PyAxencoAPI : HTTP error during login: %s", err)
             raise
         except TimeoutError as err:
-            _LOGGER.error("Timeout error during login: %s", err)
+            _LOGGER.error("PyAxencoAPI : Timeout error during login: %s", err)
             raise
         except ValueError as err:
-            _LOGGER.error("Invalid response during login: %s", err)
+            _LOGGER.error("PyAxencoAPI : Invalid response during login: %s", err)
             raise
 
     async def logout(self) -> None:
@@ -284,13 +284,13 @@ class PyAxencoAPI:
                 self._last_fetch = time.time()
                 return data
         except aiohttp.ClientError as e:
-            _LOGGER.error("HTTP error while retrieving devices: %s", e)
+            _LOGGER.error("PyAxencoAPI : HTTP error while retrieving devices: %s", e)
             return []
         except TimeoutError as e:
-            _LOGGER.error("Timeout error while retrieving devices: %s", e)
+            _LOGGER.error("PyAxencoAPI : Timeout error while retrieving devices: %s", e)
             return []
         except ValueError as e:
-            _LOGGER.error("Invalid response while retrieving devices: %s", e)
+            _LOGGER.error("PyAxencoAPI : Invalid response while retrieving devices: %s", e)
             return []
 
     async def get_device_state(self, device_id: str) -> dict | None:
@@ -311,13 +311,13 @@ class PyAxencoAPI:
                 response.raise_for_status()
                 return await response.json()
         except aiohttp.ClientError as e:
-            _LOGGER.error("HTTP error while retrieving device %s: %s", device_id, e)
+            _LOGGER.error("PyAxencoAPI : HTTP error while retrieving device %s: %s", device_id, e)
             return None
         except TimeoutError as e:
-            _LOGGER.error("Timeout error while retrieving device %s: %s", device_id, e)
+            _LOGGER.error("PyAxencoAPI : Timeout error while retrieving device %s: %s", device_id, e)
             return None
         except ValueError as e:
-            _LOGGER.error("Invalid response while retrieving device %s: %s", device_id, e)
+            _LOGGER.error("PyAxencoAPI : Invalid response while retrieving device %s: %s", device_id, e)
             return None
 
     async def get_sub_device_state(self, gateway_id: str) -> dict | None:
@@ -338,13 +338,13 @@ class PyAxencoAPI:
                 response.raise_for_status()
                 return await response.json()
         except aiohttp.ClientError as e:
-            _LOGGER.error("HTTP error while retrieving device %s: %s", gateway_id, e)
+            _LOGGER.error("PyAxencoAPI : HTTP error while retrieving device %s: %s", gateway_id, e)
             return None
         except TimeoutError as e:
-            _LOGGER.error("Timeout error while retrieving device %s: %s", gateway_id, e)
+            _LOGGER.error("PyAxencoAPI : Timeout error while retrieving device %s: %s", gateway_id, e)
             return None
         except ValueError as e:
-            _LOGGER.error("Invalid response while retrieving device %s: %s", gateway_id, e)
+            _LOGGER.error("PyAxencoAPI : Invalid response while retrieving device %s: %s", gateway_id, e)
             return None
 
     async def set_device_temperature(self, device_id: str, temperature: float) -> None:
