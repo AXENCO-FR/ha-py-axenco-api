@@ -1,9 +1,10 @@
 """API client for interacting with the Axenco API."""
 
 from collections.abc import Callable
+from typing import Any, Coroutine
 import logging
 import time
-
+import functools
 import aiohttp
 import socketio
 import async_timeout
@@ -13,6 +14,21 @@ from .utils import find_childs, get_rfid_by_id
 _LOGGER = logging.getLogger(__name__)
 
 API_BASE = "https://user-ep.imhotepcreation.com"
+
+
+def auto_refresh_token(func: Callable[..., Coroutine[Any, Any, Any]]) -> Callable[..., Coroutine[Any, Any, Any]]:
+    """Decorator to automatically refresh the token if a request fails with 401."""
+    @functools.wraps(func)
+    async def wrapper(self: "PyAxencoAPI", *args, **kwargs):
+        try:
+            return await func(self, *args, **kwargs)
+        except aiohttp.ClientResponseError as e:
+            if e.status == 401:
+                _LOGGER.debug("PyAxencoAPI : Token expired, attempting to refresh")
+                await self.refresh_auth_token()
+                return await func(self, *args, **kwargs)
+            raise
+    return wrapper
 
 
 class PyAxencoAPI:
@@ -240,11 +256,51 @@ class PyAxencoAPI:
 
     async def logout(self) -> None:
         """Log out from the Axenco API and clear session data."""
+        # Disconnect WebSocket
         await self.sio.disconnect()
+
+        # Invalidate token on server
+        if self.token:
+            url = f"{API_BASE}/v1/auth/logout"
+            headers = self.get_auth_headers()
+            try:
+                async with self.session.delete(url, headers=headers) as response:
+                    response.raise_for_status()
+                    _LOGGER.debug("PyAxencoAPI : Logged out successfully from server")
+            except aiohttp.ClientError as err:
+                _LOGGER.error("PyAxencoAPI : HTTP error during logout: %s", err)
+            except TimeoutError as err:
+                _LOGGER.error("PyAxencoAPI : Timeout during logout: %s", err)
+
+        # Clear local state
         self.token = None
         self.refresh_token = None
         self.user_id = None
         self._listeners.clear()
+
+    async def refresh_auth_token(self) -> None:
+        """Refresh the authentication token using the refresh token."""
+        if not self.refresh_token:
+            raise ValueError("Missing refresh token")
+
+        url = f"{API_BASE}/v1/auth/token"
+        headers = {
+            "application": "home-assistant",
+            "application-version": "1.0.0",
+            "source-type": "plugin",
+            "source-id": self.source_id,
+            "Authorization": f"Bearer {self.refresh_token}"
+        }
+
+        async with async_timeout.timeout(10):
+            response = await self.session.post(url, headers=headers)
+            response.raise_for_status()
+            result = await response.json()
+            if "token" not in result:
+                raise ValueError("Invalid refresh response")
+
+            self.token = result["token"]
+            _LOGGER.info("Token successfully refreshed")
 
     def get_auth_headers(self) -> dict[str, str]:
         """Generate and return the authentication headers for API requests.
@@ -260,6 +316,7 @@ class PyAxencoAPI:
             "source-id": self.source_id
         }
 
+    @auto_refresh_token
     async def get_devices(self, force: bool = False) -> list[dict]:
         """Retrieve the list of devices associated with the authenticated user.
 
@@ -283,16 +340,17 @@ class PyAxencoAPI:
                 self._devices_cache = data
                 self._last_fetch = time.time()
                 return data
-        except aiohttp.ClientError as e:
+        except aiohttp.ClientResponseError as e:
+            if e.status == 401:
+                raise
             _LOGGER.error("PyAxencoAPI : HTTP error while retrieving devices: %s", e)
-            return []
-        except TimeoutError as e:
-            _LOGGER.error("PyAxencoAPI : Timeout error while retrieving devices: %s", e)
-            return []
-        except ValueError as e:
-            _LOGGER.error("PyAxencoAPI : Invalid response while retrieving devices: %s", e)
-            return []
+            return None
 
+        except (aiohttp.ClientError, TimeoutError, ValueError) as e:
+            _LOGGER.error("PyAxencoAPI : Error while retrieving devices: %s", e)
+            return None
+
+    @auto_refresh_token
     async def get_device_state(self, device_id: str) -> dict | None:
         """Retrieve the state of a specific device.
 
@@ -310,16 +368,17 @@ class PyAxencoAPI:
             async with self.session.get(url, headers=headers) as response:
                 response.raise_for_status()
                 return await response.json()
-        except aiohttp.ClientError as e:
+        except aiohttp.ClientResponseError as e:
+            if e.status == 401:
+                raise
             _LOGGER.error("PyAxencoAPI : HTTP error while retrieving device %s: %s", device_id, e)
             return None
-        except TimeoutError as e:
-            _LOGGER.error("PyAxencoAPI : Timeout error while retrieving device %s: %s", device_id, e)
-            return None
-        except ValueError as e:
-            _LOGGER.error("PyAxencoAPI : Invalid response while retrieving device %s: %s", device_id, e)
+
+        except (aiohttp.ClientError, TimeoutError, ValueError) as e:
+            _LOGGER.error("PyAxencoAPI : Error while retrieving device %s: %s", device_id, e)
             return None
 
+    @auto_refresh_token
     async def get_sub_device_state(self, gateway_id: str) -> dict | None:
         """Retrieve the state of a specific sub device.
 
@@ -337,16 +396,17 @@ class PyAxencoAPI:
             async with self.session.get(url, headers=headers) as response:
                 response.raise_for_status()
                 return await response.json()
-        except aiohttp.ClientError as e:
+        except aiohttp.ClientResponseError as e:
+            if e.status == 401:
+                raise
             _LOGGER.error("PyAxencoAPI : HTTP error while retrieving device %s: %s", gateway_id, e)
             return None
-        except TimeoutError as e:
-            _LOGGER.error("PyAxencoAPI : Timeout error while retrieving device %s: %s", gateway_id, e)
-            return None
-        except ValueError as e:
-            _LOGGER.error("PyAxencoAPI : Invalid response while retrieving device %s: %s", gateway_id, e)
+
+        except (aiohttp.ClientError, TimeoutError, ValueError) as e:
+            _LOGGER.error("PyAxencoAPI : Error while retrieving device %s: %s", gateway_id, e)
             return None
 
+    @auto_refresh_token
     async def set_device_temperature(self, device_id: str, temperature: float) -> None:
         """Set the temperature of a specific device.
 
@@ -369,6 +429,7 @@ class PyAxencoAPI:
         async with self.session.patch(url, json=payload, headers=headers) as resp:
             resp.raise_for_status()
 
+    @auto_refresh_token
     async def set_sub_device_temperature(self, gateway_id: str, device_rfid: str, temperature: float) -> None:
         """Set the temperature of a specific sub device.
 
@@ -394,6 +455,7 @@ class PyAxencoAPI:
         async with self.session.patch(url, json=payload, headers=headers) as resp:
             resp.raise_for_status()
 
+    @auto_refresh_token
     async def set_device_mode(self, device_id: str, mode_code: int) -> None:
         """Set the mode of a specific device.
 
@@ -416,6 +478,7 @@ class PyAxencoAPI:
         async with self.session.patch(url, json=payload, headers=headers) as resp:
             resp.raise_for_status()
 
+    @auto_refresh_token
     async def set_sub_device_mode(self, gateway_id: str, device_rfid: str, mode_code: int) -> None:
         """Set the mode of a specific sub device.
 
@@ -441,6 +504,7 @@ class PyAxencoAPI:
         async with self.session.patch(url, json=payload, headers=headers) as resp:
             resp.raise_for_status()
 
+    @auto_refresh_token
     async def set_sub_device_mode_ufh(self, gateway_id: str, device_rfid: str, mode_code: int) -> None:
         """Set the mode of a specific sub device.
 
@@ -466,6 +530,7 @@ class PyAxencoAPI:
         async with self.session.patch(url, json=payload, headers=headers) as resp:
             resp.raise_for_status()
 
+    @auto_refresh_token
     async def set_device_program(self, device_id: str, program_data: dict) -> None:
         """Set the weekly program of a specific device.
 

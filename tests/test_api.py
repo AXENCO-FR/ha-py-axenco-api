@@ -95,3 +95,48 @@ async def test_notify_update_with_listener(api_client):
         api_client._listeners["child1"] = mock_cb
         await api_client.notify_update("dev123", {"temp": 21})
         assert mock_cb.call_count == 2
+
+@pytest.mark.asyncio
+async def test_refresh_token_success(api_client):
+    api_client.refresh_token = "refresh123"
+    with aioresponses() as m:
+        m.post(f"{API_BASE}/v1/auth/token", payload={"token": "new_token"})
+        await api_client.refresh_auth_token()
+        assert api_client.token == "new_token"
+
+@pytest.mark.asyncio
+async def test_refresh_token_invalid_response(api_client):
+    api_client.refresh_token = "refresh123"
+    with aioresponses() as m:
+        m.post(f"{API_BASE}/v1/auth/token", payload={})
+        with pytest.raises(ValueError):
+            await api_client.refresh_auth_token()
+
+@pytest.mark.asyncio
+async def test_auto_refresh_token_on_unauthorized(api_client):
+
+    api_client.token = "old_token"
+    api_client.refresh_token = "refresh123"
+
+    with aioresponses() as m:
+
+        m.get(
+            f"{API_BASE}/v1/devices/device123",
+            status=401,
+            reason="Unauthorized"
+        )
+
+        m.post(
+            f"{API_BASE}/v1/auth/token",
+            payload={"token": "new_token"}
+        )
+
+        m.get(
+            f"{API_BASE}/v1/devices/device123",
+            payload={"state": "refreshed"}
+        )
+
+        result = await api_client.get_device_state("device123")
+
+    assert result == {"state": "refreshed"}
+    assert api_client.token == "new_token"
