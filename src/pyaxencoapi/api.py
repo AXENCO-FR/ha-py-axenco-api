@@ -281,7 +281,7 @@ class PyAxencoAPI:
     async def refresh_auth_token(self) -> None:
         """Refresh the authentication token using the refresh token."""
         if not self.refresh_token:
-            raise ValueError("Missing refresh token")
+            raise ValueError("PyAxencoAPI : Missing refresh token")
 
         url = f"{API_BASE}/v1/auth/token"
         headers = {
@@ -297,10 +297,10 @@ class PyAxencoAPI:
             response.raise_for_status()
             result = await response.json()
             if "token" not in result:
-                raise ValueError("Invalid refresh response")
+                raise ValueError("PyAxencoAPI : Invalid refresh response")
 
             self.token = result["token"]
-            _LOGGER.info("Token successfully refreshed")
+            _LOGGER.debug("PyAxencoAPI : Token successfully refreshed")
 
     def get_auth_headers(self) -> dict[str, str]:
         """Generate and return the authentication headers for API requests.
