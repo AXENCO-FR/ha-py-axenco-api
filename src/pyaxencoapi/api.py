@@ -338,7 +338,7 @@ class PyAxencoAPI:
 
         """
         if not force and time.time() - self._last_fetch < 300:
-            return self._devices_cache
+            return self._devices_cache["devices"]
 
         url = f"{API_BASE}/v1/users/{self.user_id}/devices"
         headers = self.get_auth_headers()
