@@ -40,7 +40,7 @@ async def test_login_invalid_response(api_client):
 
 @pytest.mark.asyncio
 async def test_get_devices_cache(api_client):
-    api_client._devices_cache = [{"id": "1"}]
+    api_client._devices_cache = {"devices": [{"id": "1"}]}
     api_client._last_fetch = time.time()
     devices = await api_client.get_devices()
     assert devices == [{"id": "1"}]
