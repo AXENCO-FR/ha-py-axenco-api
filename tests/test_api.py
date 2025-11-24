@@ -11,7 +11,7 @@ API_BASE = "https://user-ep.imhotepcreation.com"
 @pytest.fixture
 async def api_client():
     async with aiohttp.ClientSession() as session:
-        api = PyAxencoAPI("sourceid_test", session)
+        api = PyAxencoAPI(session)
         yield api
 
 

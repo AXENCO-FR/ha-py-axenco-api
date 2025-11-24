@@ -38,7 +38,7 @@ def auto_refresh_token(
 class PyAxencoAPI:
     """API client for interacting with the Axenco API."""
 
-    def __init__(self, source_id: str, session: aiohttp.ClientSession) -> None:
+    def __init__(self, session: aiohttp.ClientSession) -> None:
         """Initialize the client.
 
         Args:
@@ -47,7 +47,7 @@ class PyAxencoAPI:
 
         """
         self.session = session
-        self.source_id = source_id
+        self.source_id = "myneomitis"
         self.token: str | None = None
         self.refresh_token: str | None = None
         self.user_id: str | None = None
