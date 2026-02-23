@@ -1,16 +1,32 @@
 [project]
 name = "pyaxencoapi"
-version = "1.0.2"
+version = "1.0.6"
 description = "Librairie d'utilisation de l'API REST/Websocket d'Axenco"
 readme = "README.md"
 authors = [{ name = "Léo Periou", email = "leo.periou@axenco.com" }]
 license = { text = "MIT" }
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = [
     "aiohttp>=3.8.0",
-    "python-socketio[asyncio_client]>=5.0.0",
-    "async-timeout>=4.0.2"
+    "python-socketio[asyncio_client]>=5.0.0"
 ]
+keywords = ["axenco", "api", "iot", "myneomitis", "async"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Home Automation",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+
+[project.urls]
+Homepage = "https://github.com/AXENCO-FR/ha-py-axenco-api"
+Repository = "https://github.com/AXENCO-FR/ha-py-axenco-api"
+Issues = "https://github.com/AXENCO-FR/ha-py-axenco-api/issues"
 
 [build-system]
 requires = ["setuptools>=61.0", "wheel"]

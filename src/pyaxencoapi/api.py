@@ -5,9 +5,10 @@ from typing import Any, Coroutine
 import logging
 import time
 import functools
+import asyncio
+
 import aiohttp
 import socketio
-import async_timeout
 
 from .utils import find_childs, get_rfid_by_id
 
@@ -16,8 +17,11 @@ _LOGGER = logging.getLogger(__name__)
 API_BASE = "https://user-ep.imhotepcreation.com"
 
 
-def auto_refresh_token(func: Callable[..., Coroutine[Any, Any, Any]]) -> Callable[..., Coroutine[Any, Any, Any]]:
+def auto_refresh_token(
+    func: Callable[..., Coroutine[Any, Any, Any]],
+) -> Callable[..., Coroutine[Any, Any, Any]]:
     """Decorator to automatically refresh the token if a request fails with 401."""
+
     @functools.wraps(func)
     async def wrapper(self: "PyAxencoAPI", *args, **kwargs):
         try:
@@ -28,13 +32,14 @@ def auto_refresh_token(func: Callable[..., Coroutine[Any, Any, Any]]) -> Callabl
                 await self.refresh_auth_token()
                 return await func(self, *args, **kwargs)
             raise
+
     return wrapper
 
 
 class PyAxencoAPI:
     """API client for interacting with the Axenco API."""
 
-    def __init__(self, source_id: str, session: aiohttp.ClientSession) -> None:
+    def __init__(self, session: aiohttp.ClientSession) -> None:
         """Initialize the client.
 
         Args:
@@ -43,7 +48,7 @@ class PyAxencoAPI:
 
         """
         self.session = session
-        self.source_id = source_id
+        self.source_id = "myneomitis"
         self.token: str | None = None
         self.refresh_token: str | None = None
         self.user_id: str | None = None
@@ -58,9 +63,9 @@ class PyAxencoAPI:
         self._discovery_callbacks: list[Callable[[dict], None]] = []
         self._removal_callbacks: list[Callable[[str], None]] = []
 
-
     async def connect_websocket(self) -> None:
         """Connect the Axenco WebSocket and handle events."""
+
         @self.sio.event
         async def connect() -> None:
             _LOGGER.debug("PyAxencoAPI : WebSocket connected to Axenco")
@@ -126,7 +131,7 @@ class PyAxencoAPI:
                 ws_url,
                 socketio_path="socket.io-v2",
                 transports=["websocket"],
-                headers=self.get_auth_headers()
+                headers=self.get_auth_headers(),
             )
 
         except (socketio.exceptions.ConnectionError, aiohttp.ClientError) as e:
@@ -136,7 +141,9 @@ class PyAxencoAPI:
         """Disconnect the Axenco WebSocket connection."""
         await self.sio.disconnect()
 
-    def register_listener(self, device_id: str, callback: Callable[[dict], None]) -> None:
+    def register_listener(
+        self, device_id: str, callback: Callable[[dict], None]
+    ) -> None:
         """Register a listener for WebSocket updates.
 
         Args:
@@ -151,7 +158,7 @@ class PyAxencoAPI:
         Register a callback to be invoked when a new device is discovered.
 
         Args:
-            callback (Callable[[dict], None]): A function that takes a dictionary 
+            callback (Callable[[dict], None]): A function that takes a dictionary
             containing device information as its argument and returns None.
         """
         self._discovery_callbacks.append(callback)
@@ -161,8 +168,8 @@ class PyAxencoAPI:
         Registers a callback function to be invoked when a device is unlinked.
 
         Args:
-            callback (Callable[[str], None]): A function that takes a single string argument 
-            (representing the device ID) and returns None. This function will be called 
+            callback (Callable[[str], None]): A function that takes a single string argument
+            (representing the device ID) and returns None. This function will be called
             whenever a device is removed.
         """
         self._removal_callbacks.append(callback)
@@ -179,7 +186,7 @@ class PyAxencoAPI:
 
     async def notify_removal(self, device_id: str) -> None:
         """Notify listeners that a device was removed (unlinked).
-        
+
         Args:
             device_id (str): The ID of the device to remove.
         """
@@ -227,16 +234,20 @@ class PyAxencoAPI:
             "application": "home-assistant",
             "application-version": "1.0.0",
             "source-type": "plugin",
-            "source-id": self.source_id
+            "source-id": self.source_id,
         }
 
         try:
-            async with async_timeout.timeout(10):
+            async with asyncio.timeout(10):
                 response = await self.session.post(url, json=data, headers=headers)
                 response.raise_for_status()
                 result = await response.json()
 
-                if "token" not in result or "refresh_token" not in result or "id" not in result:
+                if (
+                    "token" not in result
+                    or "refresh_token" not in result
+                    or "id" not in result
+                ):
                     raise ValueError("PyAxencoAPI : Unexpected response format")  # noqa: TRY301
 
                 self.token = result["token"]
@@ -289,10 +300,10 @@ class PyAxencoAPI:
             "application-version": "1.0.0",
             "source-type": "plugin",
             "source-id": self.source_id,
-            "Authorization": f"Bearer {self.refresh_token}"
+            "Authorization": f"Bearer {self.refresh_token}",
         }
 
-        async with async_timeout.timeout(10):
+        async with asyncio.timeout(10):
             response = await self.session.post(url, headers=headers)
             response.raise_for_status()
             result = await response.json()
@@ -313,7 +324,7 @@ class PyAxencoAPI:
             "Authorization": f"Bearer {self.token}",
             "application": "home-assistant",
             "source-type": "plugin",
-            "source-id": self.source_id
+            "source-id": self.source_id,
         }
 
     @auto_refresh_token
@@ -328,7 +339,7 @@ class PyAxencoAPI:
 
         """
         if not force and time.time() - self._last_fetch < 300:
-            return self._devices_cache
+            return self._devices_cache["devices"]
 
         url = f"{API_BASE}/v1/users/{self.user_id}/devices"
         headers = self.get_auth_headers()
@@ -339,7 +350,7 @@ class PyAxencoAPI:
                 data = await response.json()
                 self._devices_cache = data
                 self._last_fetch = time.time()
-                return data
+                return data["devices"]
         except aiohttp.ClientResponseError as e:
             if e.status == 401:
                 raise
@@ -371,11 +382,15 @@ class PyAxencoAPI:
         except aiohttp.ClientResponseError as e:
             if e.status == 401:
                 raise
-            _LOGGER.error("PyAxencoAPI : HTTP error while retrieving device %s: %s", device_id, e)
+            _LOGGER.error(
+                "PyAxencoAPI : HTTP error while retrieving device %s: %s", device_id, e
+            )
             return None
 
         except (aiohttp.ClientError, TimeoutError, ValueError) as e:
-            _LOGGER.error("PyAxencoAPI : Error while retrieving device %s: %s", device_id, e)
+            _LOGGER.error(
+                "PyAxencoAPI : Error while retrieving device %s: %s", device_id, e
+            )
             return None
 
     @auto_refresh_token
@@ -399,11 +414,15 @@ class PyAxencoAPI:
         except aiohttp.ClientResponseError as e:
             if e.status == 401:
                 raise
-            _LOGGER.error("PyAxencoAPI : HTTP error while retrieving device %s: %s", gateway_id, e)
+            _LOGGER.error(
+                "PyAxencoAPI : HTTP error while retrieving device %s: %s", gateway_id, e
+            )
             return None
 
         except (aiohttp.ClientError, TimeoutError, ValueError) as e:
-            _LOGGER.error("PyAxencoAPI : Error while retrieving device %s: %s", gateway_id, e)
+            _LOGGER.error(
+                "PyAxencoAPI : Error while retrieving device %s: %s", gateway_id, e
+            )
             return None
 
     @auto_refresh_token
@@ -421,16 +440,14 @@ class PyAxencoAPI:
         """
         url = f"{API_BASE}/v1/devices/{device_id}/state"
         headers = self.get_auth_headers()
-        payload = {
-            "parameters": {
-                "overrideTemp": temperature
-            }
-        }
+        payload = {"parameters": {"overrideTemp": temperature}}
         async with self.session.patch(url, json=payload, headers=headers) as resp:
             resp.raise_for_status()
 
     @auto_refresh_token
-    async def set_sub_device_temperature(self, gateway_id: str, device_rfid: str, temperature: float) -> None:
+    async def set_sub_device_temperature(
+        self, gateway_id: str, device_rfid: str, temperature: float
+    ) -> None:
         """Set the temperature of a specific sub device.
 
         Args:
@@ -445,13 +462,7 @@ class PyAxencoAPI:
         """
         url = f"{API_BASE}/v1/devices/{gateway_id}/sub-devices/state"
         headers = self.get_auth_headers()
-        payload = {
-            "parameters": {
-                device_rfid: {
-                    "targetTemp": temperature
-                }
-            }
-        }
+        payload = {"parameters": {device_rfid: {"targetTemp": temperature}}}
         async with self.session.patch(url, json=payload, headers=headers) as resp:
             resp.raise_for_status()
 
@@ -470,16 +481,14 @@ class PyAxencoAPI:
         """
         url = f"{API_BASE}/v1/devices/{device_id}/state"
         headers = self.get_auth_headers()
-        payload = {
-            "parameters": {
-                "targetMode": mode_code
-            }
-        }
+        payload = {"parameters": {"targetMode": mode_code}}
         async with self.session.patch(url, json=payload, headers=headers) as resp:
             resp.raise_for_status()
 
     @auto_refresh_token
-    async def set_sub_device_mode(self, gateway_id: str, device_rfid: str, mode_code: int) -> None:
+    async def set_sub_device_mode(
+        self, gateway_id: str, device_rfid: str, mode_code: int
+    ) -> None:
         """Set the mode of a specific sub device.
 
         Args:
@@ -494,18 +503,14 @@ class PyAxencoAPI:
         """
         url = f"{API_BASE}/v1/devices/{gateway_id}/sub-devices/state"
         headers = self.get_auth_headers()
-        payload = {
-            "parameters": {
-                device_rfid: {
-                    "targetMode": mode_code
-                }
-            }
-        }
+        payload = {"parameters": {device_rfid: {"targetMode": mode_code}}}
         async with self.session.patch(url, json=payload, headers=headers) as resp:
             resp.raise_for_status()
 
     @auto_refresh_token
-    async def set_sub_device_mode_ufh(self, gateway_id: str, device_rfid: str, mode_code: int) -> None:
+    async def set_sub_device_mode_ufh(
+        self, gateway_id: str, device_rfid: str, mode_code: int
+    ) -> None:
         """Set the mode of a specific sub device.
 
         Args:
@@ -520,13 +525,7 @@ class PyAxencoAPI:
         """
         url = f"{API_BASE}/v1/devices/{gateway_id}/sub-devices/state"
         headers = self.get_auth_headers()
-        payload = {
-            "parameters": {
-                device_rfid: {
-                    "changeOverUser": mode_code
-                }
-            }
-        }
+        payload = {"parameters": {device_rfid: {"changeOverUser": mode_code}}}
         async with self.session.patch(url, json=payload, headers=headers) as resp:
             resp.raise_for_status()
 
@@ -545,9 +544,6 @@ class PyAxencoAPI:
         """
         url = f"{API_BASE}/v1/devices/{device_id}/program"
         headers = self.get_auth_headers()
-        payload = {
-            "data": program_data,
-            "redundancy": "weekly"
-        }
+        payload = {"data": program_data, "redundancy": "weekly"}
         async with self.session.patch(url, json=payload, headers=headers) as resp:
             resp.raise_for_status()
