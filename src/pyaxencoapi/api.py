@@ -327,6 +327,14 @@ class PyAxencoAPI:
             "source-id": self.source_id,
         }
 
+    @staticmethod
+    def _extract_gateway_id(device_parents: str) -> str:
+        """Extract gateway id from device_parents (",gateway_id,other,")."""
+        parts = [part.strip() for part in device_parents.split(",") if part.strip()]
+        if not parts:
+            raise ValueError("PyAxencoAPI : Invalid device_parents format")
+        return parts[0]
+
     @auto_refresh_token
     async def get_devices(self, force: bool = False) -> list[dict]:
         """Retrieve the list of devices associated with the authenticated user.
@@ -394,16 +402,17 @@ class PyAxencoAPI:
             return None
 
     @auto_refresh_token
-    async def get_sub_device_state(self, gateway_id: str) -> dict | None:
+    async def get_sub_device_state(self, device_parents: str) -> dict | None:
         """Retrieve the state of a specific sub device.
 
         Args:
-            gateway_id: The unique identifier of the gateway device.
+            device_parents: Parent chain containing gateway id.
 
         Returns:
             The state of the device if successful, or None if an error occurs.
 
         """
+        gateway_id = self._extract_gateway_id(device_parents)
         url = f"{API_BASE}/v1/devices/{gateway_id}/sub-devices"
         headers = self.get_auth_headers()
 
@@ -446,12 +455,12 @@ class PyAxencoAPI:
 
     @auto_refresh_token
     async def set_sub_device_temperature(
-        self, gateway_id: str, device_rfid: str, temperature: float
+        self, device_parents: str, device_rfid: str, temperature: float
     ) -> None:
         """Set the temperature of a specific sub device.
 
         Args:
-            gateway_id: The unique identifier of the gateway device.
+            device_parents: Parent chain containing gateway id.
             device_rfid: The RFID of the sub device.
             temperature: The desired temperature to set for the sub device.
 
@@ -460,6 +469,7 @@ class PyAxencoAPI:
             aiohttp.ClientResponseError: If the server returns an error response.
 
         """
+        gateway_id = self._extract_gateway_id(device_parents)
         url = f"{API_BASE}/v1/devices/{gateway_id}/sub-devices/state"
         headers = self.get_auth_headers()
         payload = {"parameters": {device_rfid: {"targetTemp": temperature}}}
@@ -487,12 +497,12 @@ class PyAxencoAPI:
 
     @auto_refresh_token
     async def set_sub_device_mode(
-        self, gateway_id: str, device_rfid: str, mode_code: int
+        self, device_parents: str, device_rfid: str, mode_code: int
     ) -> None:
         """Set the mode of a specific sub device.
 
         Args:
-            gateway_id: The unique identifier of the gateway device.
+            device_parents: Parent chain containing gateway id.
             device_rfid: The RFID of the sub device.
             mode_code: The code representing the desired mode to set for the device.
 
@@ -501,6 +511,7 @@ class PyAxencoAPI:
             aiohttp.ClientResponseError: If the server returns an error response.
 
         """
+        gateway_id = self._extract_gateway_id(device_parents)
         url = f"{API_BASE}/v1/devices/{gateway_id}/sub-devices/state"
         headers = self.get_auth_headers()
         payload = {"parameters": {device_rfid: {"targetMode": mode_code}}}
@@ -509,12 +520,12 @@ class PyAxencoAPI:
 
     @auto_refresh_token
     async def set_sub_device_mode_ufh(
-        self, gateway_id: str, device_rfid: str, mode_code: int
+        self, device_parents: str, device_rfid: str, mode_code: int
     ) -> None:
         """Set the mode of a specific sub device.
 
         Args:
-            gateway_id: The unique identifier of the gateway device.
+            device_parents: Parent chain containing gateway id.
             device_rfid: The RFID of the sub device.
             mode_code: The code representing the desired mode to set for the device.
 
@@ -523,6 +534,7 @@ class PyAxencoAPI:
             aiohttp.ClientResponseError: If the server returns an error response.
 
         """
+        gateway_id = self._extract_gateway_id(device_parents)
         url = f"{API_BASE}/v1/devices/{gateway_id}/sub-devices/state"
         headers = self.get_auth_headers()
         payload = {"parameters": {device_rfid: {"changeOverUser": mode_code}}}

@@ -145,3 +145,57 @@ async def test_auto_refresh_token_on_unauthorized(api_client):
 
     assert result == {"state": "refreshed"}
     assert api_client.token == "new_token"
+
+
+def test_extract_gateway_id_from_device_parents(api_client):
+    assert api_client._extract_gateway_id(",gateway_123,other,") == "gateway_123"
+    assert api_client._extract_gateway_id("gateway_direct") == "gateway_direct"
+
+    with pytest.raises(ValueError):
+        api_client._extract_gateway_id(",,")
+
+
+@pytest.mark.asyncio
+async def test_get_sub_device_state_uses_device_parents(api_client):
+    api_client.token = "abc"
+
+    with aioresponses() as m:
+        m.get(
+            f"{API_BASE}/v1/devices/gateway_123/sub-devices",
+            payload={"devices": [{"id": "sub1"}]},
+        )
+
+        result = await api_client.get_sub_device_state(",gateway_123,other,")
+
+    assert result == {"devices": [{"id": "sub1"}]}
+
+
+@pytest.mark.asyncio
+async def test_set_sub_device_temperature_uses_device_parents(api_client):
+    api_client.token = "abc"
+
+    with aioresponses() as m:
+        m.patch(f"{API_BASE}/v1/devices/gateway_123/sub-devices/state", status=200)
+        await api_client.set_sub_device_temperature(
+            ",gateway_123,other,",
+            "rfid_1",
+            21.5,
+        )
+
+
+@pytest.mark.asyncio
+async def test_set_sub_device_mode_uses_device_parents(api_client):
+    api_client.token = "abc"
+
+    with aioresponses() as m:
+        m.patch(f"{API_BASE}/v1/devices/gateway_123/sub-devices/state", status=200)
+        await api_client.set_sub_device_mode(",gateway_123,other,", "rfid_1", 2)
+
+
+@pytest.mark.asyncio
+async def test_set_sub_device_mode_ufh_uses_device_parents(api_client):
+    api_client.token = "abc"
+
+    with aioresponses() as m:
+        m.patch(f"{API_BASE}/v1/devices/gateway_123/sub-devices/state", status=200)
+        await api_client.set_sub_device_mode_ufh(",gateway_123,other,", "rfid_1", 1)
