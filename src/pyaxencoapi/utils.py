@@ -1,30 +1,29 @@
 """Utility functions for PyAxencoAPI"""
 
-from typing import Any
+from collections.abc import Sequence
 
-def find_childs(devices: list[dict[str, Any]], parent_rfid: str) -> list[str]:
+from .models import AxencoDevice
+
+
+def find_childs(devices: Sequence[AxencoDevice], parent_rfid: str) -> list[str]:
     """Find child devices by parent RFID.
 
     Args:
-        devices (list[dict[str, Any]]): List of device dictionaries.
+        devices: Device snapshots.
         parent_rfid (str): RFID of the parent device.
 
     Returns:
         list[str]: List of `_id` values of child devices.
 
     """
-    return [
-        device["_id"]
-        for device in devices
-        if "parents" in device and parent_rfid in device["parents"].split(",")
-    ]
+    return [device.id for device in devices if parent_rfid in device.parents]
 
 
-def get_rfid_by_id(devices: list[dict[str, Any]], id: str) -> str:
+def get_rfid_by_id(devices: Sequence[AxencoDevice], id: str) -> str:
     """Return the RFID of the device matching the given ID.
 
     Args:
-        devices (list[dict[str, Any]]): List of device dictionaries.
+        devices: Device snapshots.
         id (str): The ID of the device to search for.
 
     Returns:
@@ -32,6 +31,6 @@ def get_rfid_by_id(devices: list[dict[str, Any]], id: str) -> str:
 
     """
     for device in devices:
-        if device.get("_id") == id:
-            return device.get("rfid", "")
+        if device.id == id:
+            return device.rfid or ""
     return ""
