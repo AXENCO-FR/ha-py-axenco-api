@@ -133,4 +133,28 @@ PRESET_MODE_MODELS: dict[str, ModelPresetMap] = {
         Preset.ANTIFROST,
         Preset.STANDBY,
     ),
+    "DHW": _model_presets(
+        Preset.ON,
+        Preset.OFF,
+        Preset.BOOST,
+        Preset.AUTO,
+    ),
+    "RT7": _model_presets(
+        Preset.SETPOINT,
+        Preset.BOOST,
+        Preset.ECO,
+        Preset.COMFORT,
+        Preset.AUTO,
+        Preset.ANTIFROST,
+        Preset.STANDBY,
+    ),
+    "SH_NTD": _model_presets(
+        Preset.SETPOINT,
+        Preset.BOOST,
+        Preset.ECO,
+        Preset.COMFORT,
+        Preset.AUTO,
+        Preset.ANTIFROST,
+        Preset.STANDBY,
+    )
 }
