@@ -9,7 +9,7 @@ pip install pyaxencoapi
 ```
 
 Python **3.14 ou supérieur** est requis. Python 3.11, 3.12 et 3.13 ne sont
-plus pris en charge. La bibliothèque ne dépend pas de Home Assistant.
+plus pris en charge.
 
 ## Objets publics et migration
 
