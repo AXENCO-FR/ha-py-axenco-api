@@ -5,10 +5,10 @@ description = "Librairie d'utilisation de l'API REST/Websocket d'Axenco"
 readme = "README.md"
 authors = [{ name = "Léo Periou", email = "leo.periou@axenco.com" }]
 license = { text = "MIT" }
-requires-python = ">=3.11"
+requires-python = ">=3.14"
 dependencies = [
     "aiohttp>=3.8.0",
-    "python-socketio[asyncio_client]>=5.0.0"
+    "python-socketio[asyncio_client]>=5.12.0"
 ]
 keywords = ["axenco", "api", "iot", "myneomitis", "async"]
 classifiers = [
@@ -16,9 +16,7 @@ classifiers = [
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.11",
-    "Programming Language :: Python :: 3.12",
-    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Home Automation",
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
@@ -38,6 +36,9 @@ package-dir = {"" = "src"}
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+pyaxencoapi = ["py.typed"]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 addopts = "--tb=short -q"
@@ -48,18 +49,28 @@ source = ["pyaxencoapi"]
 
 [tool.mypy]
 strict = true
+python_version = "3.14"
+files = ["src/pyaxencoapi", "tests/typing/public_models.py", "tests/typing/public_client.py"]
+follow_imports = "silent"
+
+[[tool.mypy.overrides]]
+module = "socketio.*"
+ignore_missing_imports = true
+
+[tool.ruff]
+target-version = "py314"
 
 [tool.isort]
 profile = "black"
 
 [project.optional-dependencies]
 dev = [
+  "build",
+  "mypy",
+  "ruff",
   "pytest",
   "pytest-asyncio",
-  "aiohttp",
-  "aioresponses",
   "python-socketio[asyncio_client]",
   "coverage",
   "pytest-cov"
 ]
-

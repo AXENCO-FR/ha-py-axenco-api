@@ -1,6 +1,8 @@
 """Constants for the PyAxencoAPI library."""
 
+import warnings
 from enum import Enum
+from typing import TYPE_CHECKING, Final
 
 
 class Preset(Enum):
@@ -42,7 +44,10 @@ class Preset(Enum):
 
 
 class ModelPresetMap(dict[str, int]):
-    """Preset map object exposing a reverse code->key view."""
+    """Model-local codes: 1 means comfort, relay on, or UFH cooling.
+
+    Never reverse a cross-model table: these code spaces overlap.
+    """
 
     @property
     def reverse(self) -> dict[int, str]:
@@ -56,6 +61,7 @@ class ModelPresetMap(dict[str, int]):
 def _model_presets(*presets: Preset) -> ModelPresetMap:
     """Build a model preset map from Preset values."""
     return ModelPresetMap({preset.key: preset.code for preset in presets})
+
 
 PRESET_MODE_MODELS: dict[str, ModelPresetMap] = {
     "EV30": _model_presets(
@@ -156,5 +162,52 @@ PRESET_MODE_MODELS: dict[str, ModelPresetMap] = {
         Preset.AUTO,
         Preset.ANTIFROST,
         Preset.STANDBY,
-    )
+    ),
 }
+
+
+def _legacy_table(
+    name: str, module: str
+) -> dict[str, int] | dict[int, str] | dict[str, Preset]:
+    """Provide deprecated legacy tables without mixing reverse code spaces."""
+    legacy: dict[str, dict[str, int] | dict[int, str] | dict[str, Preset]] = {
+        "PRESET_BY_KEY": {preset.key: preset for preset in Preset},
+        "PRESET_MODE_MAP": _model_presets(
+            Preset.COMFORT,
+            Preset.ECO,
+            Preset.ANTIFROST,
+            Preset.STANDBY,
+            Preset.BOOST,
+            Preset.SETPOINT,
+            Preset.COMFORT_PLUS,
+            Preset.AUTO,
+        ),
+        "PRESET_MODE_SELECT_EXTRAS": _model_presets(Preset.ECO_1, Preset.ECO_2),
+        "PRESET_MODE_MAP_RELAIS": PRESET_MODE_MODELS["EWS_RELAIS"].copy(),
+        "REVERSE_PRESET_MODE_MAP_RELAIS": PRESET_MODE_MODELS["EWS_RELAIS"].reverse,
+        "PRESET_MODE_MAP_UFH": PRESET_MODE_MODELS["UFH"].copy(),
+        "REVERSE_PRESET_MODE_MAP_UFH": PRESET_MODE_MODELS["UFH"].reverse,
+    }
+    if name not in legacy:
+        raise AttributeError(f"module {module!r} has no attribute {name!r}")
+    warnings.warn(
+        f"{name} is deprecated; use Preset or PRESET_MODE_MODELS[model]",
+        DeprecationWarning,
+        stacklevel=3,
+    )
+    return legacy[name]
+
+
+if TYPE_CHECKING:
+    PRESET_BY_KEY: Final[dict[str, Preset]] = {}
+    PRESET_MODE_MAP: Final[dict[str, int]] = {}
+    PRESET_MODE_SELECT_EXTRAS: Final[dict[str, int]] = {}
+    PRESET_MODE_MAP_RELAIS: Final[dict[str, int]] = {}
+    REVERSE_PRESET_MODE_MAP_RELAIS: Final[dict[int, str]] = {}
+    PRESET_MODE_MAP_UFH: Final[dict[str, int]] = {}
+    REVERSE_PRESET_MODE_MAP_UFH: Final[dict[int, str]] = {}
+
+if not TYPE_CHECKING:
+
+    def __getattr__(name: str) -> dict[str, int] | dict[int, str] | dict[str, Preset]:
+        return _legacy_table(name, __name__)

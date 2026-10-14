@@ -1,0 +1,3 @@
+include src/pyaxencoapi/py.typed
+include scripts/check_distribution.py
+recursive-include tests *.py

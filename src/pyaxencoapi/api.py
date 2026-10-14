@@ -1,561 +1,746 @@
-"""API client for interacting with the Axenco API."""
+"""Typed REST and push client; the caller owns the HTTP session."""
 
-from collections.abc import Callable
-from typing import Any, Coroutine
-import logging
-import time
-import functools
 import asyncio
+import logging
+import re
+import sys
+import time
+import warnings
+from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import replace
+from typing import Any
+from urllib.parse import urlencode
 
 import aiohttp
 import socketio
 
-from .utils import find_childs, get_rfid_by_id
+from .exceptions import (
+    AxencoAuthError,
+    AxencoConnectionError,
+    AxencoError,
+    AxencoResponseError,
+)
+from .models import (
+    UNSET,
+    AxencoDevice,
+    AxencoEvent,
+    AxencoState,
+    AxencoStatePatch,
+    ConnectionChanged,
+    DeviceAdded,
+    DeviceRemoved,
+    DeviceUpdated,
+)
 
 _LOGGER = logging.getLogger(__name__)
-
 API_BASE = "https://user-ep.imhotepcreation.com"
-
-
-def auto_refresh_token(
-    func: Callable[..., Coroutine[Any, Any, Any]],
-) -> Callable[..., Coroutine[Any, Any, Any]]:
-    """Decorator to automatically refresh the token if a request fails with 401."""
-
-    @functools.wraps(func)
-    async def wrapper(self: "PyAxencoAPI", *args, **kwargs):
-        try:
-            return await func(self, *args, **kwargs)
-        except aiohttp.ClientResponseError as e:
-            if e.status == 401:
-                _LOGGER.debug("PyAxencoAPI : Token expired, attempting to refresh")
-                await self.refresh_auth_token()
-                return await func(self, *args, **kwargs)
-            raise
-
-    return wrapper
+REQUEST_TIMEOUT = 10
 
 
 class PyAxencoAPI:
-    """API client for interacting with the Axenco API."""
+    """Axenco client with immutable snapshots and synchronous push subscribers."""
 
     def __init__(self, session: aiohttp.ClientSession) -> None:
-        """Initialize the client.
-
-        Args:
-            source_id: The unique id for request.
-            session: The aiohttp session for making HTTP requests.
-
-        """
         self.session = session
         self.source_id = "myneomitis"
         self.token: str | None = None
         self.refresh_token: str | None = None
         self.user_id: str | None = None
-        self.sio = socketio.AsyncClient()
+        self.sio = socketio.AsyncClient(http_session=session, request_timeout=10)
+        self._devices_cache: dict[str, AxencoDevice] = {}
+        self._last_fetch: float | None = None
+        self._refresh_lock = asyncio.Lock()
+        self._refresh_generation = 0
+        self._refresh_last_error: AxencoError | None = None
+        self._refresh_failure: AxencoAuthError | None = None
+        self._connection_error: AxencoError | None = None
+        self._recovery_task: asyncio.Task[None] | None = None
+        self._inventory_lock = asyncio.Lock()
+        self._subscribers: dict[object, Callable[[AxencoEvent], None]] = {}
+        self._connected = False
+        self._closing = False
+        self._handlers: set[asyncio.Task[Any]] = set()
+        self._connect_task: asyncio.Task[None] | None = None
+        self._ready = asyncio.Event()
+        self._handshake_token: str | None = None
+        self._socket_refreshed = False
+        self._socket_refresh_token: str | None = None
+        self._register_handlers()
 
-        # Cache
-        self._devices_cache: list[dict] = []
-        self._last_fetch: float = 0
+    def subscribe(self, callback: Callable[[AxencoEvent], None]) -> Callable[[], None]:
+        """Subscribe until the idempotent returned function is called."""
+        key = object()
+        self._subscribers[key] = callback
 
-        # Websocket listeners
-        self._listeners: dict[str, Callable[[dict], None]] = {}
-        self._discovery_callbacks: list[Callable[[dict], None]] = []
-        self._removal_callbacks: list[Callable[[str], None]] = []
+        def unsubscribe() -> None:
+            self._subscribers.pop(key, None)
+
+        return unsubscribe
+
+    def _emit(self, event: AxencoEvent) -> None:
+        if self._closing and not isinstance(event, ConnectionChanged):
+            return
+        for key, callback in tuple(self._subscribers.items()):
+            if key not in self._subscribers:
+                continue
+            try:
+                callback(event)
+            except Exception:  # noqa: BLE001
+                _LOGGER.error("Axenco subscriber failed")
+
+    def _transport(self, connected: bool) -> None:
+        if connected != self._connected:
+            self._connected = connected
+            self._emit(ConnectionChanged(connected=connected))
+
+    def _register_handlers(self) -> None:
+        async def connect() -> None:
+            self._socket_refreshed = False
+            self._socket_refresh_token = None
+            self._connection_error = None
+            try:
+                await self.get_devices(force=True)
+            except AxencoError as err:
+                if self._closing:
+                    return
+                self._connection_error = err
+                self._transport(False)
+                if isinstance(err, AxencoAuthError):
+                    self._emit(ConnectionChanged(connected=False, error=err))
+                if not isinstance(err, AxencoAuthError) and (
+                    self._recovery_task is None or self._recovery_task.done()
+                ):
+                    self._recovery_task = asyncio.create_task(self._recover_inventory())
+                self._ready.set()
+                return
+            if self._closing:
+                return
+            self._transport(True)
+            self._ready.set()
+
+        async def connect_error(data: object) -> None:
+            failure = sys.exception()
+            rejected = isinstance(data, Mapping) and "message" in data
+            cause = failure
+            while cause is not None:
+                if isinstance(cause, aiohttp.ClientResponseError):
+                    rejected = cause.status in (401, 403)
+                    break
+                cause = cause.__cause__ or cause.__context__
+            if isinstance(data, str) and re.search(
+                r"\bUnexpected status code (401|403)\b", data
+            ):
+                rejected = True
+            self._connection_error = None
+            if not rejected:
+                self._connection_error = AxencoConnectionError(
+                    "WebSocket connection failed"
+                )
+                self._connection_error.__cause__ = (
+                    failure
+                    or socketio.exceptions.ConnectionError("WebSocket transport failed")
+                )
+            elif self._socket_refreshed:
+                self._connection_error = AxencoAuthError(
+                    "WebSocket credentials rejected"
+                )
+                self._connection_error.__cause__ = socketio.exceptions.ConnectionError(
+                    "WebSocket handshake rejected"
+                )
+            else:
+                try:
+                    await self._refresh(self._handshake_token)
+                except AxencoError as err:
+                    self._connection_error = err
+                else:
+                    self._socket_refreshed = True
+                    self._socket_refresh_token = self.token
+            if self._closing:
+                return
+            if self._connection_error is not None:
+                self._transport(False)
+                self._emit(
+                    ConnectionChanged(connected=False, error=self._connection_error)
+                )
+                if isinstance(self._connection_error, AxencoAuthError):
+                    self.sio.reconnection = False
+                    if self.sio._reconnect_abort is not None:
+                        self.sio._reconnect_abort.set()
+
+        async def disconnect(*args: object) -> None:
+            self._transport(False)
+
+        async def update(data: object) -> None:
+            envelope = self._object(data)
+            device_id = envelope.get("objectId")
+            if not isinstance(device_id, str) or not isinstance(
+                envelope.get("data"), Mapping
+            ):
+                await self.get_devices(force=True)
+                return
+            await self.notify_update(device_id, envelope["data"])
+
+        async def update_ext(data: object) -> None:
+            envelope = self._object(data)
+            reconciled = False
+            device_id = envelope.get("objectId")
+            payload = envelope.get("data")
+            if isinstance(device_id, str) and isinstance(payload, Mapping):
+                parent = self._devices_cache.get(device_id)
+                known = {
+                    device.rfid
+                    for device in self._devices_cache.values()
+                    if parent is not None and parent.rfid in device.parents
+                }
+                if parent is not None and not parent.parents and payload.keys() - known:
+                    await self.get_devices(force=True)
+                    reconciled = True
+                    parent = self._devices_cache.get(device_id)
+                matches = [
+                    device
+                    for device in self._devices_cache.values()
+                    if parent is not None
+                    and parent.rfid in device.parents
+                    and device.rfid in payload
+                ]
+                if matches:
+                    for child in matches:
+                        await self.notify_update(child.id, payload[child.rfid])
+                    return
+                if parent is not None and parent.parents:
+                    await self.notify_update(parent.id, payload)
+                    return
+            if not reconciled:
+                await self.get_devices(force=True)
+
+        async def reconcile(data: object) -> None:
+            await self.get_devices(force=True)
+
+        async def unlink(data: object) -> None:
+            envelope = self._object(data)
+            device_id = envelope.get("objectId")
+            if isinstance(device_id, str) and device_id:
+                await self.notify_removal(device_id)
+            else:
+                await self.get_devices(force=True)
+
+        def register(name: str, handler: Callable[..., Awaitable[None]]) -> None:
+            async def tracked(*args: object) -> None:
+                if self._closing:
+                    return
+                task = asyncio.current_task()
+                assert task is not None
+                self._handlers.add(task)
+                try:
+                    await handler(*args)
+                finally:
+                    self._handlers.discard(task)
+
+            self.sio.on(name, tracked)
+
+        register("connect", connect)
+        register("connect_error", connect_error)
+        register("disconnect", disconnect)
+        for name in ("setState", "update"):
+            register(name, update)
+        for name in ("updateExtDevState", "setExtDevState"):
+            register(name, update_ext)
+        for name in ("link", "discover", "setProgram"):
+            register(name, reconcile)
+        register("unlink", unlink)
 
     async def connect_websocket(self) -> None:
-        """Connect the Axenco WebSocket and handle events."""
-
-        @self.sio.event
-        async def connect() -> None:
-            _LOGGER.debug("PyAxencoAPI : WebSocket connected to Axenco")
-
-        @self.sio.event
-        async def disconnect() -> None:
-            _LOGGER.debug("PyAxencoAPI : WebSocket disconnected from Axenco")
-
-        @self.sio.on("setState")
-        async def on_set_state(data: dict) -> None:
-            device_id = data.get("objectId")
-            _LOGGER.debug("PyAxencoAPI : WS SETSTATE received: %s", data)
-            await self.notify_update(device_id, data.get("data"))
-
-        @self.sio.on("setProgram")
-        async def on_set_program(data: dict) -> None:
-            device_id = data.get("objectId")
-            _LOGGER.debug("PyAxencoAPI : WS SETPROGRAM received: %s", data)
-            await self.notify_update(device_id, {"program": data.get("data")})
-
-        @self.sio.event
-        async def connect_error(data: dict) -> None:
-            _LOGGER.error("PyAxencoAPI : WebSocket connection error: %s", data)
-
-        @self.sio.on("update")
-        async def on_update(data: dict) -> None:
-            device_id = data.get("objectId")
-            _LOGGER.debug("PyAxencoAPI : WS UPDATE received: %s", data)
-            await self.notify_update(device_id, data.get("data"))
-
-        @self.sio.on("discover")
-        async def on_discover(data: dict) -> None:
-            _LOGGER.debug("PyAxencoAPI : WS DISCOVER received: %s", data)
-
-        @self.sio.on("updateExtDevState")
-        async def on_update_ext(data: dict) -> None:
-            device_id = data.get("objectId")
-            _LOGGER.debug("PyAxencoAPI : WS UPDATE SUB-SERVICE received: %s", data)
-            await self.notify_update(device_id, data.get("data"))
-
-        @self.sio.on("setExtDevState")
-        async def on_set_ext(data: dict) -> None:
-            device_id = data.get("objectId")
-            _LOGGER.debug("PyAxencoAPI : WS SETSTATE SUB-SERVICE received: %s", data)
-            await self.notify_update(device_id, data.get("data"))
-
-        @self.sio.on("link")
-        async def on_link(data: dict) -> None:
-            devices = data.get("data", {}).get("devices", [])
-            _LOGGER.debug("PyAxencoAPI : WS LINK received: %s", data)
-            await self.notify_discovery(devices)
-
-        @self.sio.on("unlink")
-        async def on_unlink(data: dict) -> None:
-            device_id = data.get("objectId")
-            _LOGGER.debug("PyAxencoAPI : WS UNLINK received: %s", data)
-            await self.notify_removal(device_id)
-
+        """Connect with current credentials, failing explicitly on setup errors."""
+        if self._connect_task is not None and not self._connect_task.done():
+            await asyncio.shield(self._connect_task)
+            return
+        if self._connected and not self._closing:
+            return
+        self._closing = False
+        self._ready.clear()
+        self._connection_error = None
+        self.sio.reconnection = True
+        self._connect_task = asyncio.create_task(self._connect_socket())
         try:
-            ws_url = f"{API_BASE}?userId={self.user_id}"
+            await self._connect_task
+        except asyncio.CancelledError as err:
+            if self._closing:
+                raise AxencoConnectionError("WebSocket connection closed") from err
+            await self.disconnect_websocket()
+            raise
+        except AxencoError:
+            await self.disconnect_websocket()
+            raise
+        except (
+            socketio.exceptions.ConnectionError,
+            aiohttp.ClientError,
+            TimeoutError,
+        ) as err:
+            failure = self._connection_error
+            await self.disconnect_websocket()
+            if failure is not None:
+                raise failure from err
+            raise AxencoConnectionError("WebSocket connection failed") from err
 
-            await self.sio.connect(
-                ws_url,
-                socketio_path="socket.io-v2",
-                transports=["websocket"],
-                headers=self.get_auth_headers(),
-            )
+    def _socket_headers(self) -> dict[str, str]:
+        self._handshake_token = self.token
+        if self.token != self._socket_refresh_token:
+            self._socket_refreshed = False
+        return self.get_auth_headers()
 
-        except (socketio.exceptions.ConnectionError, aiohttp.ClientError) as e:
-            _LOGGER.error("PyAxencoAPI : WebSocket connection failed: %s", e)
+    async def _connect_socket(self) -> None:
+        async with asyncio.timeout(45):
+            for attempt in range(2):
+                try:
+                    await self.sio.connect(
+                        lambda: f"{API_BASE}?{urlencode({'userId': self.user_id})}",
+                        socketio_path="socket.io-v2",
+                        transports=["websocket"],
+                        headers=self._socket_headers,
+                        wait_timeout=10,
+                    )
+                except socketio.exceptions.ConnectionError:
+                    if (
+                        attempt == 0
+                        and self._socket_refreshed
+                        and self._connection_error is None
+                        and not self._closing
+                    ):
+                        continue
+                    raise
+                break
+            await self._ready.wait()
+            if self._closing:
+                raise AxencoConnectionError("WebSocket connection closed")
+            if self._connection_error is not None:
+                raise self._connection_error
 
     async def disconnect_websocket(self) -> None:
-        """Disconnect the Axenco WebSocket connection."""
+        """Stop reconnection tasks without closing the caller's HTTP session."""
+        self._closing = True
+        self.sio.reconnection = False
+        current = asyncio.current_task()
+        tasks = set(self._handlers)
+        if self._connect_task is not None:
+            tasks.add(self._connect_task)
+        tasks.discard(current)
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        if self._recovery_task is not None:
+            self._recovery_task.cancel()
+            await asyncio.gather(self._recovery_task, return_exceptions=True)
+            self._recovery_task = None
         await self.sio.disconnect()
+        await self.sio.shutdown()
+        # Namespace handlers can finish after Socket.IO's first shutdown check.
+        while self.sio.connected or self.sio._reconnect_task is not None:
+            await self.sio.disconnect()
+            await self.sio.shutdown()
+            if self.sio.connected and self.sio.eio.state == "disconnected":
+                await self.sio._handle_eio_disconnect(self.sio.reason.CLIENT_DISCONNECT)
+            if self.sio._reconnect_task is not None and self.sio._reconnect_task.done():
+                self.sio._reconnect_task = None
+        self._transport(False)
 
-    def register_listener(
-        self, device_id: str, callback: Callable[[dict], None]
-    ) -> None:
-        """Register a listener for WebSocket updates.
-
-        Args:
-            device_id: The ID of the device to listen for updates.
-            callback: The callback function to invoke on updates.
-
-        """
-        self._listeners[device_id] = callback
-
-    def register_discovery_callback(self, callback: Callable[[dict], None]) -> None:
-        """
-        Register a callback to be invoked when a new device is discovered.
-
-        Args:
-            callback (Callable[[dict], None]): A function that takes a dictionary
-            containing device information as its argument and returns None.
-        """
-        self._discovery_callbacks.append(callback)
-
-    def register_removal_callback(self, callback: Callable[[str], None]) -> None:
-        """
-        Registers a callback function to be invoked when a device is unlinked.
-
-        Args:
-            callback (Callable[[str], None]): A function that takes a single string argument
-            (representing the device ID) and returns None. This function will be called
-            whenever a device is removed.
-        """
-        self._removal_callbacks.append(callback)
-
-    async def notify_discovery(self, device: dict) -> None:
-        """
-        Notify registered listeners about the discovery of a new device.
-
-        Args:
-            device (dict): A dictionary containing information about the discovered device.
-        """
-        for cb in self._discovery_callbacks:
-            cb(device)
-
-    async def notify_removal(self, device_id: str) -> None:
-        """Notify listeners that a device was removed (unlinked).
-
-        Args:
-            device_id (str): The ID of the device to remove.
-        """
-        for cb in self._removal_callbacks:
-            cb(device_id)
-
-    async def notify_update(self, device_id: str, new_state: dict) -> None:
-        """Notify an entity of a WebSocket update and propagate to child devices.
-
-        Args:
-            device_id: The ID of the device to notify.
-            new_state: The new state to notify.
-
-        """
-        # Notify the main device
-        if cb := self._listeners.get(device_id):
-            cb(new_state)
-
-        devices = await self.get_devices()
-
-        # Find child devices
-        device_rfid = get_rfid_by_id(devices, device_id)
-        if device_rfid != "":
-            child_ids = find_childs(devices, device_rfid)
-
-            # Notify child devices
-            for child_id in child_ids:
-                if cb := self._listeners.get(child_id):
-                    cb(new_state)
-
-    async def login(self, email: str, password: str) -> None:
-        """Authenticate with the Axenco API and retrieve authentication tokens.
-
-        Raises:
-            email: The email address used for authentication.
-            password: The password used for authentication.
-            aiohttp.ClientError: If there is an HTTP error during the request.
-            TimeoutError: If the request times out.
-            ValueError: If the response is invalid.
-
-        """
-        url = f"{API_BASE}/v1/auth/login"
-        data = {"email": email, "password": password}
-        headers = {
-            "application": "home-assistant",
-            "application-version": "1.0.0",
-            "source-type": "plugin",
-            "source-id": self.source_id,
-        }
-
-        try:
-            async with asyncio.timeout(10):
-                response = await self.session.post(url, json=data, headers=headers)
-                response.raise_for_status()
-                result = await response.json()
-
-                if (
-                    "token" not in result
-                    or "refresh_token" not in result
-                    or "id" not in result
-                ):
-                    raise ValueError("PyAxencoAPI : Unexpected response format")  # noqa: TRY301
-
-                self.token = result["token"]
-                self.refresh_token = result["refresh_token"]
-                if not self.user_id:
-                    self.user_id = result["id"]
-
-        except aiohttp.ClientError as err:
-            _LOGGER.error("PyAxencoAPI : HTTP error during login: %s", err)
-            raise
-        except TimeoutError as err:
-            _LOGGER.error("PyAxencoAPI : Timeout error during login: %s", err)
-            raise
-        except ValueError as err:
-            _LOGGER.error("PyAxencoAPI : Invalid response during login: %s", err)
-            raise
-
-    async def logout(self) -> None:
-        """Log out from the Axenco API and clear session data."""
-        # Disconnect WebSocket
-        await self.sio.disconnect()
-
-        # Invalidate token on server
-        if self.token:
-            url = f"{API_BASE}/v1/auth/logout"
-            headers = self.get_auth_headers()
+    async def _recover_inventory(self) -> None:
+        """Retry only failed reconnect reconciliation, never periodic polling."""
+        delay = 1
+        while not self._closing:
+            await asyncio.sleep(delay)
+            if self._closing or not self.sio.connected:
+                return
             try:
-                async with self.session.delete(url, headers=headers) as response:
-                    response.raise_for_status()
-                    _LOGGER.debug("PyAxencoAPI : Logged out successfully from server")
-            except aiohttp.ClientError as err:
-                _LOGGER.error("PyAxencoAPI : HTTP error during logout: %s", err)
-            except TimeoutError as err:
-                _LOGGER.error("PyAxencoAPI : Timeout during logout: %s", err)
+                await self.get_devices(force=True)
+            except AxencoAuthError as err:
+                if not self._closing:
+                    self._connection_error = err
+                    self._emit(ConnectionChanged(connected=False, error=err))
+                return
+            except AxencoConnectionError, AxencoResponseError:
+                delay = min(delay * 2, 60)
+                continue
+            if self._closing or not self.sio.connected:
+                return
+            self._connection_error = None
+            self._transport(True)
+            return
 
-        # Clear local state
-        self.token = None
-        self.refresh_token = None
-        self.user_id = None
-        self._listeners.clear()
+    @staticmethod
+    def _object(value: object) -> Mapping[str, Any]:
+        if not isinstance(value, Mapping):
+            err = TypeError("Expected JSON object")
+            raise AxencoResponseError("Invalid response object") from err
+        return value
 
-    async def refresh_auth_token(self) -> None:
-        """Refresh the authentication token using the refresh token."""
-        if not self.refresh_token:
-            raise ValueError("PyAxencoAPI : Missing refresh token")
-
-        url = f"{API_BASE}/v1/auth/token"
-        headers = {
-            "application": "home-assistant",
-            "application-version": "1.0.0",
-            "source-type": "plugin",
-            "source-id": self.source_id,
-            "Authorization": f"Bearer {self.refresh_token}",
-        }
-
-        async with asyncio.timeout(10):
-            response = await self.session.post(url, headers=headers)
-            response.raise_for_status()
-            result = await response.json()
-            if "token" not in result:
-                raise ValueError("PyAxencoAPI : Invalid refresh response")
-
-            self.token = result["token"]
-            _LOGGER.debug("PyAxencoAPI : Token successfully refreshed")
+    @staticmethod
+    def _identifier(value: object) -> str:
+        if not isinstance(value, str) or not value.strip():
+            err = ValueError("Expected nonempty identifier")
+            raise AxencoResponseError("Invalid identifier") from err
+        return value
 
     def get_auth_headers(self) -> dict[str, str]:
-        """Generate and return the authentication headers for API requests.
-
-        Returns:
-            A dictionary containing the authentication headers.
-
-        """
         return {
             "Authorization": f"Bearer {self.token}",
             "application": "home-assistant",
+            "application-version": "1.0.0",
             "source-type": "plugin",
             "source-id": self.source_id,
         }
 
+    async def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        payload: object = None,
+        headers: dict[str, str] | None = None,
+        authenticated: bool = True,
+        read_json: bool = True,
+    ) -> object:
+        token = self.token
+        for attempt in range(2):
+            try:
+                async with asyncio.timeout(REQUEST_TIMEOUT):
+                    async with self.session.request(
+                        method,
+                        f"{API_BASE}{path}",
+                        json=payload,
+                        headers=headers
+                        if headers is not None
+                        else self.get_auth_headers(),
+                    ) as response:
+                        response.raise_for_status()
+                        return await response.json() if read_json else None
+            except aiohttp.ClientResponseError as err:
+                if err.status == 401 and authenticated and attempt == 0:
+                    await self._refresh(token)
+                    continue
+                if err.status in (401, 403):
+                    raise AxencoAuthError("Authentication rejected") from err
+                raise AxencoResponseError("HTTP request rejected") from err
+            except (aiohttp.ClientError, TimeoutError) as err:
+                raise AxencoConnectionError("Network request failed") from err
+            except (ValueError, TypeError) as err:
+                raise AxencoResponseError("Invalid JSON response") from err
+        raise AssertionError("Unreachable retry state")
+
+    async def login(self, email: str, password: str) -> None:
+        headers = self.get_auth_headers()
+        del headers["Authorization"]
+        data = self._object(
+            await self._request(
+                "POST",
+                "/v1/auth/login",
+                payload={"email": email, "password": password},
+                headers=headers,
+                authenticated=False,
+            )
+        )
+        token = self._identifier(data.get("token"))
+        refresh = self._identifier(data.get("refresh_token"))
+        user_id = self._identifier(data.get("id"))
+        self.token, self.refresh_token, self.user_id = token, refresh, user_id
+        self._refresh_failure = None
+        self._refresh_last_error = None
+        self._refresh_generation += 1
+
+    async def _refresh(self, expired_token: str | None) -> None:
+        generation = self._refresh_generation
+        async with self._refresh_lock:
+            if self.token != expired_token:
+                return
+            if (
+                generation != self._refresh_generation
+                and self._refresh_last_error is not None
+            ):
+                raise self._refresh_last_error
+            if self._refresh_failure is not None:
+                raise self._refresh_failure
+            if not self.refresh_token:
+                raise AxencoAuthError("Missing refresh token")
+            headers = self.get_auth_headers()
+            headers["Authorization"] = f"Bearer {self.refresh_token}"
+            try:
+                response = await self._request(
+                    "POST",
+                    "/v1/auth/token",
+                    headers=headers,
+                    authenticated=False,
+                )
+                data = self._object(response)
+                token = self._identifier(data.get("token"))
+                refresh = (
+                    self._identifier(data["refresh_token"])
+                    if "refresh_token" in data
+                    else self.refresh_token
+                )
+            except AxencoError as err:
+                self._refresh_generation += 1
+                self._refresh_last_error = err
+                if isinstance(err, AxencoAuthError):
+                    self._refresh_failure = err
+                raise
+            self.token, self.refresh_token = token, refresh
+            self._refresh_generation += 1
+            self._refresh_last_error = None
+
+    async def refresh_auth_token(self) -> None:
+        await self._refresh(self.token)
+
+    async def logout(self) -> None:
+        try:
+            await self.disconnect_websocket()
+            if self.token:
+                await self._request("DELETE", "/v1/auth/logout", read_json=False)
+        finally:
+            self.token = self.refresh_token = self.user_id = None
+            self._subscribers.clear()
+            self._devices_cache.clear()
+            self._last_fetch = None
+            self._refresh_failure = None
+            self._refresh_last_error = None
+            self._connection_error = None
+
+    async def get_devices(self, force: bool = False) -> list[AxencoDevice]:
+        requested = time.monotonic()
+        async with self._inventory_lock:
+            if force and self._last_fetch is not None and self._last_fetch >= requested:
+                return list(self._devices_cache.values())
+            if (
+                not force
+                and self._last_fetch is not None
+                and time.monotonic() - self._last_fetch < 300
+            ):
+                return list(self._devices_cache.values())
+            data = self._object(
+                await self._request("GET", f"/v1/users/{self.user_id}/devices")
+            )
+            raw = data.get("devices")
+            if not isinstance(raw, list):
+                raise AxencoResponseError("Invalid inventory") from TypeError(
+                    "Expected devices list"
+                )
+            devices = [AxencoDevice.from_json(item) for item in raw]
+            inventory = {device.id: device for device in devices}
+            if len(inventory) != len(devices):
+                raise AxencoResponseError(
+                    "Duplicate device identifiers"
+                ) from ValueError("Duplicate identifier")
+            previous = self._devices_cache
+            self._devices_cache = inventory
+            self._last_fetch = time.monotonic()
+            for device_id in previous.keys() - inventory.keys():
+                self._emit(DeviceRemoved(device_id=device_id))
+            for device in devices:
+                old = previous.get(device.id)
+                if old is None or (old.model, old.name, old.parents, old.rfid) != (
+                    device.model,
+                    device.name,
+                    device.parents,
+                    device.rfid,
+                ):
+                    self._emit(DeviceAdded(device=device))
+                elif old != device:
+                    patch = AxencoStatePatch(
+                        **{
+                            field: getattr(device.state, field)
+                            for field in AxencoState.__dataclass_fields__
+                        }
+                    )
+                    self._emit(
+                        DeviceUpdated(
+                            device_id=device.id, patch=patch, connected=device.connected
+                        )
+                    )
+            return devices
+
+    async def get_device_state(self, device_id: str) -> AxencoState:
+        data = self._object(await self._request("GET", f"/v1/devices/{device_id}"))
+        return AxencoState.from_json(data.get("state", data))
+
     @staticmethod
     def _extract_gateway_id(device_parents: str) -> str:
-        """Extract gateway id from device_parents (",gateway_id,other,")."""
         parts = [part.strip() for part in device_parents.split(",") if part.strip()]
         if not parts:
-            raise ValueError("PyAxencoAPI : Invalid device_parents format")
+            raise AxencoResponseError("Invalid parent chain") from ValueError(
+                "Empty parent chain"
+            )
         return parts[0]
 
-    @auto_refresh_token
-    async def get_devices(self, force: bool = False) -> list[dict]:
-        """Retrieve the list of devices associated with the authenticated user.
+    async def get_sub_device_state(self, device_parents: str) -> Mapping[str, object]:
+        """Return a validated object; the endpoint's inner schema is not yet fixed."""
+        gateway = self._extract_gateway_id(device_parents)
+        return self._object(
+            await self._request("GET", f"/v1/devices/{gateway}/sub-devices")
+        )
 
-        Args:
-            force: Whether to force a refresh of the device list.
+    async def notify_update(self, device_id: str, new_state: object) -> None:
+        data = self._object(new_state)
+        if device_id not in self._devices_cache:
+            await self.get_devices(force=True)
+        async with self._inventory_lock:
+            self._apply_update(device_id, data)
 
-        Returns:
-            A list of devices if successful, or an empty list if an error occurs.
-
-        """
-        if not force and time.time() - self._last_fetch < 300:
-            return self._devices_cache["devices"]
-
-        url = f"{API_BASE}/v1/users/{self.user_id}/devices"
-        headers = self.get_auth_headers()
-
-        try:
-            async with self.session.get(url, headers=headers) as response:
-                response.raise_for_status()
-                data = await response.json()
-                self._devices_cache = data
-                self._last_fetch = time.time()
-                return data["devices"]
-        except aiohttp.ClientResponseError as e:
-            if e.status == 401:
-                raise
-            _LOGGER.error("PyAxencoAPI : HTTP error while retrieving devices: %s", e)
-            return None
-
-        except (aiohttp.ClientError, TimeoutError, ValueError) as e:
-            _LOGGER.error("PyAxencoAPI : Error while retrieving devices: %s", e)
-            return None
-
-    @auto_refresh_token
-    async def get_device_state(self, device_id: str) -> dict | None:
-        """Retrieve the state of a specific device.
-
-        Args:
-            device_id: The unique identifier of the device.
-
-        Returns:
-            The state of the device if successful, or None if an error occurs.
-
-        """
-        url = f"{API_BASE}/v1/devices/{device_id}"
-        headers = self.get_auth_headers()
-
-        try:
-            async with self.session.get(url, headers=headers) as response:
-                response.raise_for_status()
-                return await response.json()
-        except aiohttp.ClientResponseError as e:
-            if e.status == 401:
-                raise
-            _LOGGER.error(
-                "PyAxencoAPI : HTTP error while retrieving device %s: %s", device_id, e
+    def _apply_update(self, device_id: str, data: Mapping[str, Any]) -> None:
+        if device_id not in self._devices_cache:
+            return
+        connected = data.get("connected", UNSET)
+        if (
+            connected is not UNSET
+            and connected is not None
+            and type(connected) is not bool
+        ):
+            raise AxencoResponseError("Invalid connected") from TypeError(
+                "Expected boolean"
             )
-            return None
+        patch = AxencoStatePatch.from_json(data.get("state", data))
+        device = self._devices_cache[device_id]
+        self._devices_cache[device_id] = replace(
+            device,
+            state=patch.apply(device.state),
+            connected=device.connected if connected is UNSET else connected,
+        )
+        self._emit(DeviceUpdated(device_id=device_id, patch=patch, connected=connected))
 
-        except (aiohttp.ClientError, TimeoutError, ValueError) as e:
-            _LOGGER.error(
-                "PyAxencoAPI : Error while retrieving device %s: %s", device_id, e
+    def is_device_available(self, device_id: str) -> bool:
+        """Derive physical availability without replacing child connection facts."""
+        device = self._devices_cache.get(device_id)
+        if device is None or device.connected is not True:
+            return False
+        parents = set(device.parents)
+        visited = {device.id}
+        while parents:
+            rfid = parents.pop()
+            parent = next(
+                (item for item in self._devices_cache.values() if item.rfid == rfid),
+                None,
             )
-            return None
+            if parent is None or parent.connected is not True:
+                return False
+            if parent.id not in visited:
+                visited.add(parent.id)
+                parents.update(parent.parents)
+        return True
 
-    @auto_refresh_token
-    async def get_sub_device_state(self, device_parents: str) -> dict | None:
-        """Retrieve the state of a specific sub device.
+    async def notify_discovery(self, device: object) -> None:
+        await self.get_devices(force=True)
 
-        Args:
-            device_parents: Parent chain containing gateway id.
+    async def notify_removal(self, device_id: str) -> None:
+        async with self._inventory_lock:
+            if self._devices_cache.pop(device_id, None) is not None:
+                self._emit(DeviceRemoved(device_id=device_id))
 
-        Returns:
-            The state of the device if successful, or None if an error occurs.
+    def register_listener(
+        self, device_id: str, callback: Callable[[dict[str, object]], None]
+    ) -> Callable[[], None]:
+        """Deprecated protocol-state adapter, without ambiguous child-state routing."""
+        warnings.warn("Use subscribe()", DeprecationWarning, stacklevel=2)
+        from .models import _STATE_KEYS
 
-        """
-        gateway_id = self._extract_gateway_id(device_parents)
-        url = f"{API_BASE}/v1/devices/{gateway_id}/sub-devices"
-        headers = self.get_auth_headers()
+        def listener(event: AxencoEvent) -> None:
+            if isinstance(event, DeviceUpdated) and event.device_id == device_id:
+                data = {
+                    key: getattr(event.patch, field)
+                    for field, key in _STATE_KEYS.items()
+                    if getattr(event.patch, field) is not UNSET
+                }
+                if event.connected is not UNSET:
+                    data["connected"] = event.connected
+                callback(data)
 
-        try:
-            async with self.session.get(url, headers=headers) as response:
-                response.raise_for_status()
-                return await response.json()
-        except aiohttp.ClientResponseError as e:
-            if e.status == 401:
-                raise
-            _LOGGER.error(
-                "PyAxencoAPI : HTTP error while retrieving device %s: %s", gateway_id, e
-            )
-            return None
+        return self.subscribe(listener)
 
-        except (aiohttp.ClientError, TimeoutError, ValueError) as e:
-            _LOGGER.error(
-                "PyAxencoAPI : Error while retrieving device %s: %s", gateway_id, e
-            )
-            return None
+    def register_discovery_callback(
+        self, callback: Callable[[dict[str, object]], None]
+    ) -> Callable[[], None]:
+        warnings.warn("Use subscribe()", DeprecationWarning, stacklevel=2)
+        from .models import _STATE_KEYS
 
-    @auto_refresh_token
+        def listener(event: AxencoEvent) -> None:
+            if isinstance(event, DeviceAdded):
+                device = event.device
+                callback(
+                    {
+                        "_id": device.id,
+                        "model": device.model,
+                        "name": device.name,
+                        "connected": device.connected,
+                        "rfid": device.rfid,
+                        "parents": "," + ",".join(device.parents) + ","
+                        if device.parents
+                        else "",
+                        "state": {
+                            key: getattr(device.state, field)
+                            for field, key in _STATE_KEYS.items()
+                        },
+                    }
+                )
+
+        return self.subscribe(listener)
+
+    def register_removal_callback(
+        self, callback: Callable[[str], None]
+    ) -> Callable[[], None]:
+        warnings.warn("Use subscribe()", DeprecationWarning, stacklevel=2)
+
+        def listener(event: AxencoEvent) -> None:
+            if isinstance(event, DeviceRemoved):
+                callback(event.device_id)
+
+        return self.subscribe(listener)
+
+    async def _command(
+        self, device_id: str, parameters: object, *, sub: bool = False
+    ) -> None:
+        suffix = "/sub-devices/state" if sub else "/state"
+        await self._request(
+            "PATCH",
+            f"/v1/devices/{device_id}{suffix}",
+            payload={"parameters": parameters},
+            read_json=False,
+        )
+
     async def set_device_temperature(self, device_id: str, temperature: float) -> None:
-        """Set the temperature of a specific device.
+        await self._command(device_id, {"overrideTemp": temperature})
 
-        Args:
-            device_id: The unique identifier of the device.
-            temperature: The desired temperature to set for the device.
+    async def set_device_mode(self, device_id: str, mode_code: int) -> None:
+        await self._command(device_id, {"targetMode": mode_code})
 
-        Raises:
-            aiohttp.ClientError: If there is an HTTP error during the request.
-            aiohttp.ClientResponseError: If the server returns an error response.
-
-        """
-        url = f"{API_BASE}/v1/devices/{device_id}/state"
-        headers = self.get_auth_headers()
-        payload = {"parameters": {"overrideTemp": temperature}}
-        async with self.session.patch(url, json=payload, headers=headers) as resp:
-            resp.raise_for_status()
-
-    @auto_refresh_token
     async def set_sub_device_temperature(
         self, device_parents: str, device_rfid: str, temperature: float
     ) -> None:
-        """Set the temperature of a specific sub device.
+        await self._command(
+            self._extract_gateway_id(device_parents),
+            {device_rfid: {"targetTemp": temperature}},
+            sub=True,
+        )
 
-        Args:
-            device_parents: Parent chain containing gateway id.
-            device_rfid: The RFID of the sub device.
-            temperature: The desired temperature to set for the sub device.
-
-        Raises:
-            aiohttp.ClientError: If there is an HTTP error during the request.
-            aiohttp.ClientResponseError: If the server returns an error response.
-
-        """
-        gateway_id = self._extract_gateway_id(device_parents)
-        url = f"{API_BASE}/v1/devices/{gateway_id}/sub-devices/state"
-        headers = self.get_auth_headers()
-        payload = {"parameters": {device_rfid: {"targetTemp": temperature}}}
-        async with self.session.patch(url, json=payload, headers=headers) as resp:
-            resp.raise_for_status()
-
-    @auto_refresh_token
-    async def set_device_mode(self, device_id: str, mode_code: int) -> None:
-        """Set the mode of a specific device.
-
-        Args:
-            device_id: The unique identifier of the device.
-            mode_code: The code representing the desired mode to set for the device.
-
-        Raises:
-            aiohttp.ClientError: If there is an HTTP error during the request.
-            aiohttp.ClientResponseError: If the server returns an error response.
-
-        """
-        url = f"{API_BASE}/v1/devices/{device_id}/state"
-        headers = self.get_auth_headers()
-        payload = {"parameters": {"targetMode": mode_code}}
-        async with self.session.patch(url, json=payload, headers=headers) as resp:
-            resp.raise_for_status()
-
-    @auto_refresh_token
     async def set_sub_device_mode(
         self, device_parents: str, device_rfid: str, mode_code: int
     ) -> None:
-        """Set the mode of a specific sub device.
+        await self._command(
+            self._extract_gateway_id(device_parents),
+            {device_rfid: {"targetMode": mode_code}},
+            sub=True,
+        )
 
-        Args:
-            device_parents: Parent chain containing gateway id.
-            device_rfid: The RFID of the sub device.
-            mode_code: The code representing the desired mode to set for the device.
-
-        Raises:
-            aiohttp.ClientError: If there is an HTTP error during the request.
-            aiohttp.ClientResponseError: If the server returns an error response.
-
-        """
-        gateway_id = self._extract_gateway_id(device_parents)
-        url = f"{API_BASE}/v1/devices/{gateway_id}/sub-devices/state"
-        headers = self.get_auth_headers()
-        payload = {"parameters": {device_rfid: {"targetMode": mode_code}}}
-        async with self.session.patch(url, json=payload, headers=headers) as resp:
-            resp.raise_for_status()
-
-    @auto_refresh_token
     async def set_sub_device_mode_ufh(
         self, device_parents: str, device_rfid: str, mode_code: int
     ) -> None:
-        """Set the mode of a specific sub device.
+        await self._command(
+            self._extract_gateway_id(device_parents),
+            {device_rfid: {"changeOverUser": mode_code}},
+            sub=True,
+        )
 
-        Args:
-            device_parents: Parent chain containing gateway id.
-            device_rfid: The RFID of the sub device.
-            mode_code: The code representing the desired mode to set for the device.
-
-        Raises:
-            aiohttp.ClientError: If there is an HTTP error during the request.
-            aiohttp.ClientResponseError: If the server returns an error response.
-
-        """
-        gateway_id = self._extract_gateway_id(device_parents)
-        url = f"{API_BASE}/v1/devices/{gateway_id}/sub-devices/state"
-        headers = self.get_auth_headers()
-        payload = {"parameters": {device_rfid: {"changeOverUser": mode_code}}}
-        async with self.session.patch(url, json=payload, headers=headers) as resp:
-            resp.raise_for_status()
-
-    @auto_refresh_token
-    async def set_device_program(self, device_id: str, program_data: dict) -> None:
-        """Set the weekly program of a specific device.
-
-        Args:
-            device_id: The unique identifier of the device.
-            program_data: The program data to set for the device.
-
-        Raises:
-            aiohttp.ClientError: If there is an HTTP error during the request.
-            aiohttp.ClientResponseError: If the server returns an error response.
-
-        """
-        url = f"{API_BASE}/v1/devices/{device_id}/program"
-        headers = self.get_auth_headers()
-        payload = {"data": program_data, "redundancy": "weekly"}
-        async with self.session.patch(url, json=payload, headers=headers) as resp:
-            resp.raise_for_status()
+    async def set_device_program(
+        self, device_id: str, program_data: Mapping[str, object]
+    ) -> None:
+        await self._request(
+            "PATCH",
+            f"/v1/devices/{device_id}/program",
+            payload={"data": dict(program_data), "redundancy": "weekly"},
+            read_json=False,
+        )
