@@ -1,6 +1,6 @@
 # PyAxencoAPI
 
-Client Python asynchrone pour interagir avec les dispositifs connectés MyNeomitis via API REST/Websocket.
+An asynchronous Python client for MyNeomitis connected devices using the REST API and WebSocket.
 
 ## Installation
 
@@ -8,60 +8,59 @@ Client Python asynchrone pour interagir avec les dispositifs connectés MyNeomit
 pip install pyaxencoapi
 ```
 
-Python **3.14 ou supérieur** est requis. Python 3.11, 3.12 et 3.13 ne sont
-plus pris en charge.
+Python **3.14 or later** is required. Python 3.11, 3.12, and 3.13 are no
+longer supported.
 
-## Objets publics et migration
+## Public objects and migration
 
-Cette évolution rompt le contrat public : les dictionnaires
-de dispositifs sont remplacés par des `AxencoDevice` et les erreurs réseau,
-d'authentification et de réponse deviennent des exceptions explicites.
-Cette rupture est versionnée en `2.0.0`. La disponibilité sur PyPI dépend de la
-publication de cette version par un mainteneur.
+This release breaks the public contract: device dictionaries are replaced with
+`AxencoDevice` objects, and network, authentication, and response errors become
+explicit exceptions. These breaking changes are versioned as `2.0.0`.
+Availability on PyPI depends on a maintainer publishing this version.
 
-`get_devices(force=False)` retourne une liste de `AxencoDevice` et utilise un
-cache de cinq minutes avec horloge monotone ; une liste vide signifie un inventaire
-réellement vide. `get_device_state()` retourne `AxencoState`. `subscribe(callback)`
-retourne une désinscription idempotente, autorise plusieurs callbacks et les isole
-en cas d'erreur. Les patches ne sont appliqués qu'à l'appareil concerné.
-La connexion physique de chaque enfant reste indépendante ;
-`is_device_available(id)` combine sa connexion et celles de ses parents connus,
-sans modifier les snapshots. Le consommateur combine ce résultat avec le transport
-et réévalue les enfants lorsqu'un événement parent arrive.
+`get_devices(force=False)` returns a list of `AxencoDevice` objects and uses a
+five-minute cache based on a monotonic clock; an empty list means the inventory
+is genuinely empty. `get_device_state()` returns `AxencoState`.
+`subscribe(callback)` returns an idempotent unsubscribe function, supports
+multiple callbacks, and isolates callback failures. Patches apply only to the
+affected device. Each child's physical connection remains independent;
+`is_device_available(id)` combines its connection with those of its known
+parents without modifying snapshots. Consumers combine this result with the
+transport status and reevaluate children when a parent event arrives.
 
-`link`, `discover` et les événements incomplets réconcilient l'inventaire REST.
-Chaque connexion/reconnexion réconcilie les états avant d'annoncer le transport
-disponible. Les en-têtes Socket.IO sont recalculés avec les jetons courants.
-Une réconciliation transitoirement échouée après reconnexion est retentée avec
-backoff, uniquement jusqu'au succès (ou à l'arrêt/refus d'authentification).
-Les requêtes REST sont bornées à dix secondes, le setup Socket.IO à quarante-cinq
-et attend la réconciliation initiale. Seul un refus explicite de namespace ou un
-HTTP 401/403 au handshake déclenche au plus un renouvellement partagé par jeton
-rejeté avant une nouvelle tentative. Un namespace établi avec ce jeton
-réinitialise ce compteur, pour qu'une expiration ultérieure puisse renouveler
-à nouveau. Les pannes réseau et HTTP 5xx ne renouvellent pas
-le jeton : elles signalent `AxencoConnectionError` et permettent la reconnexion
-automatique après une coupure. Un refus permanent arrête les
-reconnexions et émet `ConnectionChanged(connected=False, error=AxencoAuthError(...))`.
-Un HTTP 401 déclenche au plus un renouvellement partagé puis une seule nouvelle
-tentative ; un refus de renouvellement exige une nouvelle authentification.
+`link`, `discover`, and incomplete events trigger REST inventory reconciliation.
+Every connection or reconnection reconciles states before announcing that the
+transport is available. Socket.IO headers are rebuilt using the current tokens.
+Transient reconciliation failures after reconnection are retried with backoff
+until success, shutdown, or authentication rejection.
+REST requests have a ten-second timeout. Socket.IO setup has a forty-five-second
+timeout and waits for the initial reconciliation. Only an explicit namespace
+rejection or an HTTP 401/403 during the handshake triggers at most one shared
+refresh per rejected token before retrying. Successfully establishing a namespace
+with that token resets the counter, allowing another refresh after a later
+expiration. Network failures and HTTP 5xx responses do not refresh the token:
+they report `AxencoConnectionError` and allow automatic reconnection after an
+interruption. A permanent rejection stops reconnection attempts and emits
+`ConnectionChanged(connected=False, error=AxencoAuthError(...))`.
+An HTTP 401 triggers at most one shared refresh followed by a single retry;
+a rejected refresh requires reauthentication.
 
-La session aiohttp fournie appartient à l'appelant et n'est jamais fermée par
-la bibliothèque. `disconnect_websocket()` arrête aussi les handlers en cours,
-la récupération d'inventaire et les tâches de reconnexion ;
-`logout()` désabonne et efface le cache même si le serveur refuse la déconnexion.
-Socket.IO ≥ 5.12 est requis pour l'API d'arrêt des tâches de reconnexion.
-Avec Socket.IO 5.12, chaque refus de namespace peut attendre dix secondes ;
-un refus persistant pendant le setup peut donc prendre vingt secondes.
-Les méthodes d'action lèvent des exceptions publiques, sans retour booléen.
-Les programmes et la réponse intérieure de `get_sub_device_state()` restent des
-objets JSON non figés ; ils ne doivent pas être utilisés comme snapshots métier.
+The supplied aiohttp session belongs to the caller and is never closed by the
+library. `disconnect_websocket()` also stops active handlers, inventory retrieval,
+and reconnection tasks. `logout()` unsubscribes and clears the cache even if the
+server rejects the logout request.
+Socket.IO >= 5.12 is required for its reconnection task shutdown API.
+With Socket.IO 5.12, each namespace rejection can take ten seconds;
+a persistent rejection during setup can therefore take twenty seconds.
+Action methods raise public exceptions rather than returning booleans.
+Programs and the inner response of `get_sub_device_state()` remain mutable JSON
+objects; they must not be used as domain snapshots.
 
-`register_listener()` et `register_removal_callback()` sont des adaptateurs
-dépréciés désinscriptibles. Le listener reçoit un dictionnaire partiel d'état,
-mais ne reçoit plus les états arbitrairement recopiés depuis le parent.
-`register_discovery_callback()` est déprécié et fournit un dictionnaire projeté
-par appareil (sans JSON brut ni liste ambiguë) ; migrer vers `DeviceAdded`.
+`register_listener()` and `register_removal_callback()` are deprecated adapters
+that support unsubscribing. The listener receives a partial state dictionary,
+but no longer receives states arbitrarily copied from the parent.
+`register_discovery_callback()` is deprecated and provides a projected dictionary
+for each device, without raw JSON or an ambiguous list; migrate to `DeviceAdded`.
 
 ```python
 from pyaxencoapi import AxencoDevice, AxencoStatePatch
@@ -80,72 +79,72 @@ assert updated_state.target_temperature == 22
 assert device.preset_modes.reverse[2] == "eco"
 ```
 
-Les snapshots sont immuables. `_id` devient `id`, les noms de champs d'état
-deviennent explicites (`current_temperature`, `target_temperature`,
+Snapshots are immutable. `_id` becomes `id`, and state field names become
+explicit (`current_temperature`, `target_temperature`,
 `override_temperature`, `min_temperature`, `max_temperature`,
 `comfort_temperature`, `eco_temperature`, `target_mode`, `change_over_user`,
-`device_type`). `parents` est un tuple ordonné issu de la chaîne protocolaire
-délimitée par des virgules ; `rfid` reste une chaîne optionnelle.
-Les identifiants et modèles non vides sont obligatoires ; les modèles inconnus
-restent des chaînes sans capacités inventées.
+`device_type`). `parents` is an ordered tuple parsed from the protocol's
+comma-delimited string; `rfid` remains an optional string.
+Nonempty IDs and models are required; unknown models remain strings without
+invented capabilities.
 
-`from_json()` valide les objets à la frontière protocolaire : pas de conversion
-de chaînes numériques ni de booléens en nombres, températures finies et codes
-entiers. Les codes entiers inconnus sont conservés pour rester extensible.
-Les champs optionnels absents ou nuls valent `None` dans un snapshot (y compris
-la connexion physique inconnue). Un état de dispositif absent ou nul produit
-un état inconnu. Les clés inconnues sont ignorées et aucun JSON brut n'est
-conservé. Les constructeurs typés ne remplacent pas cette validation.
-Les schémas des programmes et sous-appareils non documentés ne sont pas figés ici.
+`from_json()` validates objects at the protocol boundary: numeric strings and
+booleans are not converted to numbers, temperatures must be finite, and codes
+must be integers. Unknown integer codes are preserved for extensibility.
+Missing or null optional fields become `None` in a snapshot, including an unknown
+physical connection. A missing or null device state produces an unknown state.
+Unknown keys are ignored, and no raw JSON is retained. Typed constructors do not
+replace this validation. Undocumented program and sub-device schemas are not
+defined here.
 
-Dans `AxencoStatePatch`, **absence** signifie `UNSET` (ne rien modifier), tandis
-que **null** signifie `None` (effacer la valeur). `apply()` crée un nouvel état
-sans toucher au précédent. Un patch est un objet d'état, pas l'enveloppe Socket.IO.
-Un événement incomplet d'inventaire doit être réconcilié, pas converti en
-dispositif artificiel.
+In `AxencoStatePatch`, an **absent** field means `UNSET` (leave unchanged), while
+**null** means `None` (clear the value). `apply()` creates a new state without
+changing the previous one. A patch is a state object, not the Socket.IO envelope.
+An incomplete inventory event must trigger reconciliation, not be converted into
+an artificial device.
 
-`AxencoEvent` est l'union de `DeviceUpdated` (identifiant, patch et connexion
-physique optionnelle), `DeviceAdded` (dispositif complet), `DeviceRemoved`
-(retrait confirmé) et `ConnectionChanged` (transport du client).
-Une coupure du transport ne modifie pas la connexion physique d'un appareil et
-un patch parent ne doit pas être recopié sur ses enfants.
+`AxencoEvent` is the union of `DeviceUpdated` (ID, patch, and optional physical
+connection), `DeviceAdded` (complete device), `DeviceRemoved` (confirmed removal),
+and `ConnectionChanged` (client transport).
+A transport interruption does not change a device's physical connection, and a
+parent patch must not be copied to its children.
 
-`AxencoError` est la base de `AxencoAuthError`, `AxencoConnectionError` et
-`AxencoResponseError`. Les conversions lèvent `AxencoResponseError` sans inclure
-les payloads sensibles ; une erreur sous-jacente éventuelle est conservée comme
-cause (`raise ... from ...`).
+`AxencoError` is the base class for `AxencoAuthError`, `AxencoConnectionError`,
+and `AxencoResponseError`. Conversions raise `AxencoResponseError` without
+including sensitive payloads; any underlying error is preserved as the cause
+(`raise ... from ...`).
 
-## Modes et compatibilité historique
+## Modes and legacy compatibility
 
-`PRESET_MODE_MODELS[model]` et `ModelPresetMap.reverse` sont la référence.
-Le code `1` signifie **comfort** pour NTD, **on** pour EWS relais et **cooling**
-pour UFH : ne jamais inverser une table globale. Pour EWS, `device_type` égal
-à `0` sélectionne `EWS_RELAIS`, `1` sélectionne `EWS_PILOTE` ; absent, nul ou
-inconnu ne confère aucune capacité. `device.preset_modes` renvoie une copie.
+`PRESET_MODE_MODELS[model]` and `ModelPresetMap.reverse` are the source of truth.
+Code `1` means **comfort** for NTD, **on** for EWS relays, and **cooling** for UFH:
+never invert a global mapping. For EWS, `device_type` set to `0` selects
+`EWS_RELAIS`, and `1` selects `EWS_PILOTE`; a missing, null, or unknown value
+provides no capabilities. `device.preset_modes` returns a copy.
 
-Les anciennes constantes `PRESET_MODE_MAP`, `PRESET_MODE_SELECT_EXTRAS`,
+The legacy constants `PRESET_MODE_MAP`, `PRESET_MODE_SELECT_EXTRAS`,
 `PRESET_MODE_MAP_RELAIS`, `REVERSE_PRESET_MODE_MAP_RELAIS`,
-`PRESET_MODE_MAP_UFH` et `REVERSE_PRESET_MODE_MAP_UFH` sont accessibles depuis
-`pyaxencoapi` et `pyaxencoapi.const`, avec `DeprecationWarning`.
-Les tables inverses restent strictement propres à leur famille ; aucune table
-inverse globale ambiguë n'est fournie. `Preset` et ses codes restent disponibles.
+`PRESET_MODE_MAP_UFH`, and `REVERSE_PRESET_MODE_MAP_UFH` are available from
+`pyaxencoapi` and `pyaxencoapi.const`, with a `DeprecationWarning`.
+Reverse mappings remain strictly specific to their family; no ambiguous global
+reverse mapping is provided. `Preset` and its codes remain available.
 
-Par rapport à la version **1.0.7** épinglée par Home Assistant :
-- `PRESET_MODE_MAP` conserve exactement ses huit clés de thermostat ; les modes
-  relais, UFH et `eco_1`/`eco_2` restent dans leurs tables dédiées. Pour les modèles
-  supplémentaires, utiliser directement `PRESET_MODE_MODELS[model]`, pas une
-  recherche dans la table historique de thermostat.
-- `PRESET_BY_KEY` reste accessible avec `DeprecationWarning` depuis les deux
-  modules ; il associe chaque clé unique à son `Preset`, y compris les nouveaux
-  modes relais, UFH et `eco_1`/`eco_2`.
-- `PRESET_BY_CODE` et `REVERSE_PRESET_MODE_MAP` sont supprimés : leurs tables
-  globales inverses seraient ambiguës. Utiliser la propriété `reverse` du modèle.
-- `PRESET_MODE_MODELS` passe de `dict[str, list[str]]` à
-  `dict[str, ModelPresetMap]` : chaque valeur associe désormais les clés aux codes.
-  `list(PRESET_MODE_MODELS[model])` fournit les clés et
-  `PRESET_MODE_MODELS[model][key]` fournit le code propre au modèle.
+Compared with version **1.0.7**, pinned by Home Assistant:
+- `PRESET_MODE_MAP` retains exactly its eight thermostat keys; relay, UFH, and
+  `eco_1`/`eco_2` modes remain in their dedicated mappings. For additional models,
+  use `PRESET_MODE_MODELS[model]` directly rather than looking them up in the
+  legacy thermostat mapping.
+- `PRESET_BY_KEY` remains available from both modules with a `DeprecationWarning`;
+  it maps each unique key to its `Preset`, including the new relay, UFH, and
+  `eco_1`/`eco_2` modes.
+- `PRESET_BY_CODE` and `REVERSE_PRESET_MODE_MAP` have been removed because their
+  global reverse mappings would be ambiguous. Use the model's `reverse` property.
+- `PRESET_MODE_MODELS` changes from `dict[str, list[str]]` to
+  `dict[str, ModelPresetMap]`: each value now maps keys to codes.
+  `list(PRESET_MODE_MODELS[model])` provides the keys, and
+  `PRESET_MODE_MODELS[model][key]` provides the model-specific code.
 
-## Développement et validation
+## Development and validation
 
 ```bash
 python3 --version  # 3.14+
@@ -156,7 +155,7 @@ python3 -m build
 python3 scripts/check_distribution.py dist/*.whl dist/*.tar.gz
 ```
 
-Le contrôle de types couvre toute la bibliothèque et un consommateur des exports.
-La wheel et le sdist incluent `py.typed` (PEP 561). Les tests REST et Socket.IO
-utilisent des serveurs locaux réels et fonctionnent avec aiohttp 3.14 sans
-aioresponses ni plafond de version de développement.
+Type checking covers the entire library and a consumer of its exports.
+The wheel and source distribution include `py.typed` (PEP 561). REST and Socket.IO
+tests use real local servers and work with aiohttp 3.14 without aioresponses or
+an upper version bound on the development dependency.
