@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.11", "3.12", "3.13"]
+        python-version: ["3.14"]
 
     steps:
       - uses: actions/checkout@v4
@@ -30,8 +30,22 @@ jobs:
         run: |
           pytest --cov=pyaxencoapi --cov-report=xml --cov-report=term
 
+      - name: Check public model types and build distributions
+        run: |
+          python -m mypy
+          python -m build
+          python scripts/check_distribution.py dist/*.whl dist/*.tar.gz
+
+      - name: Check the installed wheel's public types
+        run: |
+          python -m venv .wheel-check
+          .wheel-check/bin/python -m pip install dist/*.whl mypy
+          .wheel-check/bin/python -m mypy --no-incremental tests/typing/public_models.py
+          .wheel-check/bin/python tests/typing/public_models.py
+          .wheel-check/bin/python -m pip check
+
       - name: Upload coverage reports
-        if: matrix.python-version == '3.11'
+        if: matrix.python-version == '3.14'
         uses: codecov/codecov-action@v4
         with:
           file: ./coverage.xml
