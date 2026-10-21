@@ -275,7 +275,7 @@ class PyAxencoAPI:
             url = f"{API_BASE}/v1/auth/logout"
             headers = self.get_auth_headers()
             try:
-                async with self.session.delete(url, headers=headers) as response:
+                async with self.session.post(url, headers=headers) as response:
                     response.raise_for_status()
                     _LOGGER.debug("PyAxencoAPI : Logged out successfully from server")
             except aiohttp.ClientError as err:
@@ -300,11 +300,13 @@ class PyAxencoAPI:
             "application-version": "1.0.0",
             "source-type": "plugin",
             "source-id": self.source_id,
-            "Authorization": f"Bearer {self.refresh_token}",
+            # The endpoint expects the expired access token plus the refresh token.
+            "Authorization": f"Bearer {self.token}",
+            "refresh-token": self.refresh_token,
         }
 
         async with asyncio.timeout(10):
-            response = await self.session.post(url, headers=headers)
+            response = await self.session.get(url, headers=headers)
             response.raise_for_status()
             result = await response.json()
             if "token" not in result:

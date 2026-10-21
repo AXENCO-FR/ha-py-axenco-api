@@ -1,3 +1,4 @@
+from yarl import URL
 import time
 import pytest
 import aiohttp
@@ -90,7 +91,7 @@ async def test_logout(api_client):
     api_client.refresh_token = "ref"
     api_client.user_id = "uid"
     with aioresponses() as m:
-        m.delete(f"{API_BASE}/v1/auth/logout", status=200)
+        m.post(f"{API_BASE}/v1/auth/logout", status=200)
         await api_client.logout()
         assert api_client.token is None
         assert api_client.refresh_token is None
@@ -115,16 +116,18 @@ async def test_notify_update_with_listener(api_client):
 async def test_refresh_token_success(api_client):
     api_client.refresh_token = "refresh123"
     with aioresponses() as m:
-        m.post(f"{API_BASE}/v1/auth/token", payload={"token": "new_token"})
+        m.get(f"{API_BASE}/v1/auth/token", payload={"token": "new_token"})
         await api_client.refresh_auth_token()
         assert api_client.token == "new_token"
+        (request,) = m.requests[("GET", URL(f"{API_BASE}/v1/auth/token"))]
+        assert request.kwargs["headers"]["refresh-token"] == "refresh123"
 
 
 @pytest.mark.asyncio
 async def test_refresh_token_invalid_response(api_client):
     api_client.refresh_token = "refresh123"
     with aioresponses() as m:
-        m.post(f"{API_BASE}/v1/auth/token", payload={})
+        m.get(f"{API_BASE}/v1/auth/token", payload={})
         with pytest.raises(ValueError):
             await api_client.refresh_auth_token()
 
@@ -137,7 +140,7 @@ async def test_auto_refresh_token_on_unauthorized(api_client):
     with aioresponses() as m:
         m.get(f"{API_BASE}/v1/devices/device123", status=401, reason="Unauthorized")
 
-        m.post(f"{API_BASE}/v1/auth/token", payload={"token": "new_token"})
+        m.get(f"{API_BASE}/v1/auth/token", payload={"token": "new_token"})
 
         m.get(f"{API_BASE}/v1/devices/device123", payload={"state": "refreshed"})
 

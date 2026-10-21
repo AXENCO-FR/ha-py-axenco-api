@@ -1,6 +1,6 @@
 [project]
 name = "pyaxencoapi"
-version = "1.0.7"
+version = "1.0.7.post1"
 description = "Librairie d'utilisation de l'API REST/Websocket d'Axenco"
 readme = "README.md"
 authors = [{ name = "Léo Periou", email = "leo.periou@axenco.com" }]
@@ -56,7 +56,8 @@ profile = "black"
 dev = [
   "pytest",
   "pytest-asyncio",
-  "aiohttp",
+  # shortcut: aioresponses 0.7.9 breaks on aiohttp 3.14, drop once it supports it
+  "aiohttp<3.14",
   "aioresponses",
   "python-socketio[asyncio_client]",
   "coverage",
