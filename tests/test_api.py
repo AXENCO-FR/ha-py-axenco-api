@@ -82,7 +82,16 @@ class Server:
         )
         if request.path == "/v1/auth/login":
             return web.json_response(self.login_payload)
+        # Mirror the User endpoint routes: GET /auth/token, POST /auth/logout.
+        if request.path == "/v1/auth/logout" and request.method != "POST":
+            return web.Response(status=404)
         if request.path == "/v1/auth/token":
+            if request.method != "GET":
+                return web.Response(status=404)
+            if not request.headers.get("refresh-token") or not request.headers.get(
+                "Authorization"
+            ):
+                return web.Response(status=400)
             self.refresh_count += 1
             await asyncio.sleep(0.02)
             return web.json_response(self.refresh_payload, status=self.refresh_status)

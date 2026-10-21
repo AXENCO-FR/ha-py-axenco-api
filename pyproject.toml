@@ -1,6 +1,6 @@
 [project]
 name = "pyaxencoapi"
-version = "2.0.0"
+version = "2.0.1"
 description = "Librairie d'utilisation de l'API REST/Websocket d'Axenco"
 readme = "README.md"
 authors = [{ name = "Axenco", email = "contact-dev@axenco.com" }]

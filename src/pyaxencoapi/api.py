@@ -460,11 +460,12 @@ class PyAxencoAPI:
                 raise self._refresh_failure
             if not self.refresh_token:
                 raise AxencoAuthError("Missing refresh token")
+            # The endpoint expects the expired access token plus the refresh token.
             headers = self.get_auth_headers()
-            headers["Authorization"] = f"Bearer {self.refresh_token}"
+            headers["refresh-token"] = self.refresh_token
             try:
                 response = await self._request(
-                    "POST",
+                    "GET",
                     "/v1/auth/token",
                     headers=headers,
                     authenticated=False,
@@ -493,7 +494,7 @@ class PyAxencoAPI:
         try:
             await self.disconnect_websocket()
             if self.token:
-                await self._request("DELETE", "/v1/auth/logout", read_json=False)
+                await self._request("POST", "/v1/auth/logout", read_json=False)
         finally:
             self.token = self.refresh_token = self.user_id = None
             self._subscribers.clear()
